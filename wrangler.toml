@@ -1,0 +1,28 @@
+name = "wallet-pass-platform"
+main = "./node_modules/astro/dist/cloudflare/entrypoints/server.js"
+compatibility_date = "2026-10-10"
+
+# Cloudflare D1 Database
+[[d1_databases]]
+binding = "DB"
+database_name = "wallet_pass_db"
+database_id = "d1-f89a-412e-897b-walletpassdb01"
+
+# Cloudflare R2 Bucket
+[[r2_buckets]]
+binding = "ASSETS_BUCKET"
+bucket_name = "wallet-pass-assets"
+
+# Cloudflare Queue (Producer / Consumer)
+[[queues.producers]]
+queue = "pass-issuance-queue"
+binding = "PASS_QUEUE"
+
+[[queues.consumers]]
+queue = "pass-issuance-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+
+[vars]
+PUBLIC_DOMAIN = "https://walletpass.cloud"
+WALLETWALLET_API_URL = "https://api.walletwallet.dev/v1"

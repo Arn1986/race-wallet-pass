@@ -1,0 +1,6 @@
+{
+  "name": "Cloudflare Wallet Pass Platform",
+  "description": "Multi-tenant edge platform for event organizers to design, issue, update, and manage dynamic Apple and Google Wallet passes with Cloudflare D1, R2, Queues, and walletwallet.dev.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
