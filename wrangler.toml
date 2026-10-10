@@ -6,7 +6,7 @@ compatibility_date = "2026-10-10"
 [[d1_databases]]
 binding = "DB"
 database_name = "wallet_pass_db"
-database_id = "d1-f89a-412e-897b-walletpassdb01"
+database_id = "05208758-23d1-44f5-a205-3f81b567307a"
 
 # Cloudflare R2 Bucket
 [[r2_buckets]]
@@ -24,5 +24,5 @@ max_batch_size = 10
 max_batch_timeout = 30
 
 [vars]
-PUBLIC_DOMAIN = "https://walletpass.cloud"
+PUBLIC_DOMAIN = "https://walletpass.3fstriders.org"
 WALLETWALLET_API_URL = "https://api.walletwallet.dev/v1"
