@@ -16,6 +16,57 @@ const DEFAULT_ORG_ID = 'org-3fstriders';
 // Auto-seed default organization and template if D1 is freshly provisioned
 async function ensureD1Bootstrap(env: Env) {
   try {
+    // 0. Auto-create tables if they don't exist yet
+    await env.DB.exec(`
+      CREATE TABLE IF NOT EXISTS Organizations (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS Templates (
+        id TEXT PRIMARY KEY,
+        org_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        background_color TEXT DEFAULT '#111827',
+        text_color TEXT DEFAULT '#FFFFFF',
+        label_color TEXT DEFAULT '#9CA3AF',
+        logo_image_url TEXT,
+        background_image_url TEXT,
+        strip_image_url TEXT,
+        schema_definition TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS Races (
+        id TEXT PRIMARY KEY,
+        org_id TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        event_date DATETIME,
+        location TEXT,
+        field_mapping TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS Runners (
+        id TEXT PRIMARY KEY,
+        race_id TEXT NOT NULL,
+        email TEXT NOT NULL,
+        first_name TEXT NOT NULL,
+        last_name TEXT NOT NULL,
+        dynamic_data TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS Passes (
+        id TEXT PRIMARY KEY,
+        runner_id TEXT NOT NULL UNIQUE,
+        walletwallet_pass_id TEXT UNIQUE,
+        status TEXT DEFAULT 'pending',
+        installed_apple BOOLEAN DEFAULT 0,
+        installed_google BOOLEAN DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
     // 1. Ensure Organization
     await env.DB.prepare(
       "INSERT OR IGNORE INTO Organizations (id, name) VALUES (?, '3F Striders Athletic Club')"
