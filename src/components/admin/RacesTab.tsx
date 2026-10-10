@@ -19,6 +19,11 @@ import {
   RefreshCw,
   X,
   Trash2,
+  Mail,
+  Copy,
+  Check,
+  AlertTriangle,
+  Info,
 } from 'lucide-react';
 
 interface RacesTabProps {
@@ -42,6 +47,14 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
   const [showCreateRaceModal, setShowCreateRaceModal] = useState(false);
   const [showAddRunnerModal, setShowAddRunnerModal] = useState(false);
   const [revokingRunnerId, setRevokingRunnerId] = useState<string | null>(null);
+  const [sendingEmailId, setSendingEmailId] = useState<string | null>(null);
+  const [copiedRunnerId, setCopiedRunnerId] = useState<string | null>(null);
+  const [participantResultModal, setParticipantResultModal] = useState<{
+    runner: any;
+    pass: any;
+    emailDelivery: any;
+  } | null>(null);
+  const [notificationMsg, setNotificationMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
   // Create Race Form State
   const [newRaceName, setNewRaceName] = useState('');
@@ -182,17 +195,86 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
         }),
       });
 
-      const json = await res.json();
+      const json: any = await res.json();
       if (json.success) {
         setShowAddRunnerModal(false);
+        const registeredEmail = newRunnerEmail;
         setNewRunnerFirst('');
         setNewRunnerLast('');
         setNewRunnerEmail('');
         fetchRunners();
         fetchRaces();
+
+        // Always show the comprehensive Participant Result modal so the user
+        // has instant access to their pass link and clear visibility into email delivery status!
+        setParticipantResultModal({
+          runner: json.data?.runner || { id: json.data?.runner_id, first_name: newRunnerFirst, last_name: newRunnerLast, email: registeredEmail },
+          pass: json.data?.pass,
+          emailDelivery: json.data?.email_delivery,
+        });
+
+        if (json.data?.email_delivery?.success) {
+          setNotificationMsg({
+            type: 'success',
+            text: `Participant registered & pass email dispatched to ${registeredEmail} via Resend!`,
+          });
+        } else if (json.data?.email_delivery?.error) {
+          setNotificationMsg({
+            type: 'info',
+            text: `Participant saved in D1! Email note: ${json.data.email_delivery.error}`,
+          });
+        } else {
+          setNotificationMsg({
+            type: 'success',
+            text: `Participant registered in D1!`,
+          });
+        }
+        setTimeout(() => setNotificationMsg(null), 8000);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setNotificationMsg({ type: 'error', text: err.message || 'Error registering participant' });
+      setTimeout(() => setNotificationMsg(null), 8000);
+    }
+  };
+
+  const handleCopyPassLink = (runnerId: string) => {
+    const url = `${window.location.origin}/pass/${runnerId}`;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(url);
+    }
+    setCopiedRunnerId(runnerId);
+    setTimeout(() => setCopiedRunnerId(null), 2500);
+  };
+
+  const handleSendEmail = async (runnerId: string, emailAddr: string) => {
+    try {
+      setSendingEmailId(runnerId);
+      const res = await fetch('/api/runner/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runner_id: runnerId }),
+      });
+      const json: any = await res.json();
+      if (json.success) {
+        setNotificationMsg({
+          type: 'success',
+          text: `Pass email dispatched to ${emailAddr} via Resend!`,
+        });
+      } else {
+        const errorDetail = json.data?.error || json.message || json.error || 'Failed to dispatch via Resend.';
+        const hintDetail = json.data?.hint ? ` (${json.data.hint})` : '';
+        setNotificationMsg({
+          type: 'error',
+          text: `Email Notice: ${errorDetail}${hintDetail}`,
+        });
+      }
+      setTimeout(() => setNotificationMsg(null), 10000);
+    } catch (err: any) {
+      setNotificationMsg({ type: 'error', text: err.message || 'Error triggering pass email' });
+      setTimeout(() => setNotificationMsg(null), 8000);
+    } finally {
+      setSendingEmailId(null);
     }
   };
 
@@ -272,6 +354,30 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
 
   return (
     <div className="space-y-6">
+      {/* Toast Notification Banner */}
+      {notificationMsg && (
+        <div
+          className={`p-3.5 rounded-2xl text-xs flex items-center justify-between border animate-fadeIn ${
+            notificationMsg.type === 'success'
+              ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300'
+              : notificationMsg.type === 'error'
+              ? 'bg-rose-950/80 border-rose-500/40 text-rose-300'
+              : 'bg-sky-950/80 border-sky-500/40 text-sky-300'
+          }`}
+        >
+          <div className="flex items-center space-x-2">
+            <Mail className="w-4 h-4 flex-shrink-0" />
+            <span>{notificationMsg.text}</span>
+          </div>
+          <button
+            onClick={() => setNotificationMsg(null)}
+            className="text-xs opacity-70 hover:opacity-100 ml-3"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Top Header & Event Selector */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -515,6 +621,33 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                       {/* Actions */}
                       <td className="py-3 px-3 text-right">
                         <div className="flex items-center justify-end space-x-1.5">
+                          {/* Send / Resend Pass Email via Resend */}
+                          <button
+                            onClick={() => handleSendEmail(runner.id, runner.email)}
+                            disabled={sendingEmailId === runner.id}
+                            className="p-1.5 rounded-lg bg-sky-950/60 hover:bg-sky-900 text-sky-400 hover:text-sky-300 transition-all cursor-pointer"
+                            title={`Send digital pass email to ${runner.email} via Resend`}
+                          >
+                            {sendingEmailId === runner.id ? (
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Mail className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+
+                          {/* Copy Public Pass Link */}
+                          <button
+                            onClick={() => handleCopyPassLink(runner.id)}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer"
+                            title="Copy participant public pass link to clipboard"
+                          >
+                            {copiedRunnerId === runner.id ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+
                           {/* Edit / Push APNs */}
                           <button
                             onClick={() => setEditingRunner(runner)}
@@ -760,6 +893,16 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                 />
               </div>
 
+              <div className="p-3 rounded-xl bg-sky-950/40 border border-sky-800/60 text-sky-300 text-[11px] flex items-start space-x-2">
+                <Info className="w-4 h-4 shrink-0 text-sky-400 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-semibold text-white">Automated Pass Delivery via Resend</p>
+                  <p className="text-slate-300">
+                    Once saved to D1, an official digital pass will be issued and an automated invitation email will be dispatched to the participant with their magic wallet link.
+                  </p>
+                </div>
+              </div>
+
               <div className="pt-3 border-t border-slate-800 flex justify-end space-x-2">
                 <button
                   type="button"
@@ -776,6 +919,143 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Participant Registration Result & Pass Access Modal */}
+      {participantResultModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl">
+            <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
+              <div className="flex items-center space-x-2">
+                <CheckCircle className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-sm font-bold text-white">Participant Registered in D1</h3>
+              </div>
+              <button
+                onClick={() => setParticipantResultModal(null)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs">
+              {/* Participant Summary */}
+              <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+                <div>
+                  <div className="font-bold text-white text-sm">
+                    {participantResultModal.runner.first_name} {participantResultModal.runner.last_name}
+                  </div>
+                  <div className="text-slate-400 text-xs">{participantResultModal.runner.email}</div>
+                </div>
+                <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
+                  Pass Issued
+                </span>
+              </div>
+
+              {/* Email Delivery Status Card */}
+              {participantResultModal.emailDelivery?.success ? (
+                <div className="p-3.5 rounded-2xl bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 space-y-1">
+                  <div className="font-bold text-white flex items-center gap-1.5">
+                    <CheckCircle className="w-4 h-4 text-emerald-400" />
+                    Pass Email Dispatched via Resend
+                  </div>
+                  <p className="text-[11px] text-emerald-200/80">
+                    An email containing the digital pass link has been sent to{' '}
+                    <span className="font-semibold text-white">{participantResultModal.runner.email}</span>.
+                    {participantResultModal.emailDelivery.resendId && (
+                      <span className="ml-1 text-[10px] font-mono text-emerald-400">
+                        (ID: {participantResultModal.emailDelivery.resendId})
+                      </span>
+                    )}
+                  </p>
+                </div>
+              ) : (
+                <div className="p-3.5 rounded-2xl bg-amber-950/40 border border-amber-800/60 text-amber-200 space-y-2">
+                  <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-400" />
+                    Email Delivery Notice
+                  </div>
+                  <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                    {participantResultModal.emailDelivery?.error || 'Email was not dispatched because Resend API key is not configured.'}
+                  </p>
+                  {participantResultModal.emailDelivery?.hint && (
+                    <div className="p-2.5 rounded-xl bg-amber-900/30 border border-amber-800/40 text-[10.5px] text-amber-300 leading-relaxed">
+                      💡 <strong>Hint:</strong> {participantResultModal.emailDelivery.hint}
+                    </div>
+                  )}
+                  <div className="text-[11px] text-slate-400 pt-1 border-t border-amber-800/40 flex items-center justify-between">
+                    <span>Need to configure or test Resend?</span>
+                    <button
+                      onClick={() => {
+                        setParticipantResultModal(null);
+                        onNavigateTab('cloudflare');
+                      }}
+                      className="text-sky-400 hover:text-sky-300 font-bold underline cursor-pointer"
+                    >
+                      Open Admin Settings →
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Direct Instant Pass Access Link */}
+              <div className="space-y-1.5">
+                <label className="block uppercase font-bold text-slate-400 text-[10px]">
+                  Direct Participant Pass URL (Instant Access)
+                </label>
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={`${window.location.origin}/pass/${participantResultModal.runner.id}`}
+                    className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-sky-400 font-mono text-[11px] outline-none"
+                  />
+                  <button
+                    onClick={() => handleCopyPassLink(participantResultModal.runner.id)}
+                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs flex items-center space-x-1.5 transition-all cursor-pointer shrink-0"
+                  >
+                    {copiedRunnerId === participantResultModal.runner.id ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="text-emerald-400">Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500">
+                  You or the participant can open this URL directly in any browser on iPhone or Android to add the pass into Apple or Google Wallet.
+                </p>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setParticipantResultModal(null)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold"
+                >
+                  Done
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onOpenRunnerPass(participantResultModal.runner.id);
+                    setParticipantResultModal(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold flex items-center space-x-1.5 cursor-pointer"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Open Digital Pass Now</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Database, HardDrive, Terminal, Key, Play, Save, CheckCircle2, ShieldCheck, RefreshCw, Plus, ExternalLink } from 'lucide-react';
+import { Database, HardDrive, Terminal, Key, Play, Save, CheckCircle2, ShieldCheck, RefreshCw, Plus, ExternalLink, Mail, Send, AlertTriangle, Info, Check, Copy } from 'lucide-react';
 
 export const CloudflareConsoleTab: React.FC = () => {
   const [activeSubTab, setActiveSubTab] = useState<'wrangler' | 'd1' | 'r2' | 'settings'>('wrangler');
@@ -21,9 +21,19 @@ export const CloudflareConsoleTab: React.FC = () => {
     walletwalletApiKey: '',
     walletwalletApiUrl: '',
     resendApiKey: '',
+    emailFrom: '',
     publicDomain: '',
+    hasResendKey: false,
+    hasWalletWalletKey: false,
+    configuredViaSecret: false,
+    activeOrigin: '',
   });
   const [settingsSaved, setSettingsSaved] = useState(false);
+
+  // Email Test State
+  const [testEmailAddr, setTestEmailAddr] = useState('');
+  const [testingEmail, setTestingEmail] = useState(false);
+  const [testEmailResult, setTestEmailResult] = useState<any | null>(null);
 
   useEffect(() => {
     fetchAssets();
@@ -115,9 +125,31 @@ export const CloudflareConsoleTab: React.FC = () => {
       if (json.success) {
         setSettingsSaved(true);
         setTimeout(() => setSettingsSaved(false), 3000);
+        fetchSettings();
       }
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleTestEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!testEmailAddr.trim()) return;
+
+    try {
+      setTestingEmail(true);
+      setTestEmailResult(null);
+      const res = await fetch('/api/email/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: testEmailAddr.trim() }),
+      });
+      const json = await res.json();
+      setTestEmailResult(json);
+    } catch (err: any) {
+      setTestEmailResult({ success: false, error: err.message });
+    } finally {
+      setTestingEmail(false);
     }
   };
 
@@ -417,88 +449,223 @@ WALLETWALLET_API_URL = "https://api.walletwallet.dev/v1"`;
 
       {/* SubTab 4: Settings & Credentials */}
       {activeSubTab === 'settings' && (
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl max-w-2xl space-y-5">
-          <div>
-            <h3 className="text-sm font-bold text-white">API Credentials & Cloudflare Environment</h3>
-            <p className="text-xs text-slate-400">
-              Configure credentials for walletwallet.dev, Resend transactional emails, and custom domain routing.
-            </p>
-          </div>
-
-          <form onSubmit={handleSaveSettings} className="space-y-4 text-xs">
-            <div>
-              <label className="block uppercase font-bold text-slate-400 mb-1">
-                WALLETWALLET_API_KEY
-              </label>
-              <input
-                type="text"
-                value={settings.walletwalletApiKey}
-                onChange={(e) => setSettings({ ...settings, walletwalletApiKey: e.target.value })}
-                placeholder="ww_live_sk_..."
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
-              />
-              <p className="text-[11px] text-slate-500 mt-1">
-                Connects to walletwallet.dev for production APNs and FCM certificate signing and push dispatch.
-              </p>
-            </div>
-
-            <div>
-              <label className="block uppercase font-bold text-slate-400 mb-1">
-                WALLETWALLET_API_URL
-              </label>
-              <input
-                type="text"
-                value={settings.walletwalletApiUrl}
-                onChange={(e) => setSettings({ ...settings, walletwalletApiUrl: e.target.value })}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block uppercase font-bold text-slate-400 mb-1">
-                RESEND_API_KEY
-              </label>
-              <input
-                type="text"
-                value={settings.resendApiKey}
-                onChange={(e) => setSettings({ ...settings, resendApiKey: e.target.value })}
-                placeholder="re_..."
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
-              />
-              <p className="text-[11px] text-slate-500 mt-1">
-                Transactional email delivery of magic pass links.
-              </p>
-            </div>
-
-            <div>
-              <label className="block uppercase font-bold text-slate-400 mb-1">
-                PUBLIC_DOMAIN
-              </label>
-              <input
-                type="text"
-                value={settings.publicDomain}
-                onChange={(e) => setSettings({ ...settings, publicDomain: e.target.value })}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
-              />
-            </div>
-
-            <div className="pt-3 border-t border-slate-800 flex items-center justify-between">
-              {settingsSaved ? (
-                <span className="text-emerald-400 font-bold flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Configuration updated!
+        <div className="space-y-6 max-w-3xl">
+          {/* Resend Status Banner */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Mail className="w-4 h-4 text-sky-400" />
+                  Transactional Email Delivery (Resend API)
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Pass invitations and self-service lookups dispatch magic links to participants via Resend.
+                </p>
+              </div>
+              {settings.hasResendKey ? (
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-950 text-emerald-400 border border-emerald-800 flex items-center gap-1.5 shrink-0">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  Resend Key Active
                 </span>
               ) : (
-                <span />
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-950 text-amber-400 border border-amber-800 flex items-center gap-1.5 shrink-0">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  RESEND_API_KEY Missing
+                </span>
               )}
-              <button
-                type="submit"
-                className="px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs flex items-center space-x-1.5 transition-all cursor-pointer shadow-md shadow-sky-500/20"
-              >
-                <Save className="w-4 h-4" />
-                <span>Save Credentials</span>
-              </button>
             </div>
-          </form>
+
+            {/* Crucial Resend Free Tier Delivery Notice */}
+            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
+              <div className="font-semibold text-slate-200 flex items-center gap-1.5">
+                <Info className="w-4 h-4 text-sky-400 shrink-0" />
+                <span>Important Details for Receiving Emails with Resend:</span>
+              </div>
+              <ul className="text-slate-400 space-y-1.5 list-disc list-inside leading-relaxed text-[11.5px]">
+                <li>
+                  <strong className="text-slate-300">Free Testing Mode:</strong> If you are using Resend's default sender (<code className="text-sky-300 bg-slate-900 px-1 rounded">onboarding@resend.dev</code>), Resend only allows sending to the <em>single email address that you used to register your Resend account</em>.
+                </li>
+                <li>
+                  <strong className="text-slate-300">Sending to Any Attendee:</strong> To send passes to arbitrary runner emails, add and verify your custom DNS domain (SPF & DKIM) at <a href="https://resend.com/domains" target="_blank" rel="noreferrer" className="text-sky-400 underline hover:text-sky-300">resend.com/domains</a>, then set <strong className="text-slate-300">EMAIL_FROM</strong> below (e.g. <code className="text-sky-300 bg-slate-900 px-1 rounded">Passes &lt;tickets@yourdomain.com&gt;</code>).
+                </li>
+                <li>
+                  <strong className="text-slate-300">Direct Pass URLs:</strong> Even if emails fail or are pending domain verification, every registered participant can be viewed immediately via their direct link in the <span className="text-sky-300 font-semibold">Races & Participants</span> roster!
+                </li>
+              </ul>
+            </div>
+
+            {/* Test Email Dispatch Tool */}
+            <div className="pt-2 border-t border-slate-800">
+              <h4 className="text-xs font-bold text-slate-300 mb-2 flex items-center gap-1.5">
+                <Send className="w-3.5 h-3.5 text-sky-400" />
+                Live Resend Delivery Smoke Test
+              </h4>
+              <form onSubmit={handleTestEmail} className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="email"
+                  required
+                  placeholder="Enter your email to receive a test pass..."
+                  value={testEmailAddr}
+                  onChange={(e) => setTestEmailAddr(e.target.value)}
+                  className="flex-1 px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 text-xs text-white outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={testingEmail}
+                  className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-bold text-xs flex items-center justify-center space-x-1.5 transition-all cursor-pointer shrink-0 shadow-md shadow-sky-500/20"
+                >
+                  {testingEmail ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Sending Test...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Send Test Pass Email</span>
+                    </>
+                  )}
+                </button>
+              </form>
+
+              {testEmailResult && (
+                <div
+                  className={`mt-3 p-3.5 rounded-2xl border text-xs space-y-1.5 ${
+                    testEmailResult.success
+                      ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300'
+                      : 'bg-rose-950/40 border-rose-800/60 text-rose-300'
+                  }`}
+                >
+                  <div className="font-bold flex items-center gap-1.5">
+                    {testEmailResult.success ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4 text-rose-400" />
+                    )}
+                    <span>{testEmailResult.message || (testEmailResult.success ? 'Email sent successfully!' : 'Email delivery failed')}</span>
+                  </div>
+                  {testEmailResult.data?.hint && (
+                    <p className="text-[11px] text-amber-300/90 bg-amber-950/50 p-2 rounded-xl border border-amber-900/50">
+                      💡 <strong>Notice:</strong> {testEmailResult.data.hint}
+                    </p>
+                  )}
+                  {testEmailResult.data?.passUrl && (
+                    <p className="text-[11px] text-slate-400">
+                      Pass URL generated: <a href={testEmailResult.data.passUrl} target="_blank" rel="noreferrer" className="text-sky-400 underline">{testEmailResult.data.passUrl}</a>
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Configuration Form */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-5">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Key className="w-4 h-4 text-sky-400" />
+                Environment & API Credentials
+              </h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Keys saved here are stored securely in Cloudflare D1 and override defaults without requiring a rebuild.
+              </p>
+            </div>
+
+            <form onSubmit={handleSaveSettings} className="space-y-4 text-xs">
+              <div>
+                <label className="block uppercase font-bold text-slate-400 mb-1">
+                  RESEND_API_KEY
+                </label>
+                <input
+                  type="text"
+                  value={settings.resendApiKey}
+                  onChange={(e) => setSettings({ ...settings, resendApiKey: e.target.value })}
+                  placeholder="re_xxxxxxxxxxxxxxxxxxxx"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Get a free token from <a href="https://resend.com/api-keys" target="_blank" rel="noreferrer" className="text-sky-400 underline">resend.com/api-keys</a>.
+                </p>
+              </div>
+
+              <div>
+                <label className="block uppercase font-bold text-slate-400 mb-1">
+                  EMAIL_FROM (Sender Header)
+                </label>
+                <input
+                  type="text"
+                  value={settings.emailFrom || ''}
+                  onChange={(e) => setSettings({ ...settings, emailFrom: e.target.value })}
+                  placeholder="Wallet Pass <onboarding@resend.dev> or Passes <tickets@yourdomain.com>"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Leave empty or use <code className="text-sky-300">Wallet Pass &lt;onboarding@resend.dev&gt;</code> for free testing mode.
+                </p>
+              </div>
+
+              <div>
+                <label className="block uppercase font-bold text-slate-400 mb-1">
+                  PUBLIC_DOMAIN (Magic Pass Link Base URL)
+                </label>
+                <input
+                  type="text"
+                  value={settings.publicDomain}
+                  onChange={(e) => setSettings({ ...settings, publicDomain: e.target.value })}
+                  placeholder={typeof window !== 'undefined' ? window.location.origin : 'https://your-app.pages.dev'}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Detected live origin: <span className="text-sky-400 font-mono">{typeof window !== 'undefined' ? window.location.origin : ''}</span>. Links in outgoing emails will use this address.
+                </p>
+              </div>
+
+              <div className="pt-3 border-t border-slate-800">
+                <label className="block uppercase font-bold text-slate-400 mb-1">
+                  WALLETWALLET_API_KEY
+                </label>
+                <input
+                  type="text"
+                  value={settings.walletwalletApiKey}
+                  onChange={(e) => setSettings({ ...settings, walletwalletApiKey: e.target.value })}
+                  placeholder="ww_live_sk_..."
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Connects to walletwallet.dev for production APNs and FCM certificate signing and push dispatch.
+                </p>
+              </div>
+
+              <div>
+                <label className="block uppercase font-bold text-slate-400 mb-1">
+                  WALLETWALLET_API_URL
+                </label>
+                <input
+                  type="text"
+                  value={settings.walletwalletApiUrl}
+                  onChange={(e) => setSettings({ ...settings, walletwalletApiUrl: e.target.value })}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-between">
+                {settingsSaved ? (
+                  <span className="text-emerald-400 font-bold flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Configuration saved to Cloudflare D1!
+                  </span>
+                ) : (
+                  <span />
+                )}
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs flex items-center space-x-1.5 transition-all cursor-pointer shadow-md shadow-sky-500/20"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>Save Configuration to D1</span>
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

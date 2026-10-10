@@ -70,3 +70,10 @@ CREATE INDEX IF NOT EXISTS idx_races_org ON Races(org_id);
 CREATE INDEX IF NOT EXISTS idx_runners_race ON Runners(race_id);
 CREATE INDEX IF NOT EXISTS idx_runners_email ON Runners(email);
 CREATE INDEX IF NOT EXISTS idx_passes_status ON Passes(status);
+
+-- 6. System Settings (In-App configuration for Resend API key, Email From, Domains)
+CREATE TABLE IF NOT EXISTS SystemSettings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

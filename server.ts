@@ -510,7 +510,124 @@ app.get('/api/runners', (req, res) => {
   return res.json({ success: true, data: runners });
 });
 
-app.post('/api/runner/create', (req, res) => {
+// Helper to dispatch pass email via Resend in server runtime
+async function dispatchPassEmailServer(options: {
+  to: string;
+  firstName: string;
+  runnerId: string;
+  raceName?: string;
+  origin?: string;
+}): Promise<{ success: boolean; error?: string; resendId?: string; hint?: string; passUrl?: string }> {
+  const { to, firstName, runnerId, raceName, origin } = options;
+  const resendApiKey = d1Db.settings.resendApiKey;
+  const domain = (d1Db.settings.publicDomain && !d1Db.settings.publicDomain.includes('3fstriders.org') ? d1Db.settings.publicDomain : (origin || 'http://localhost:3000')).replace(/\/$/, '');
+  const passUrl = `${domain}/pass/${runnerId}`;
+  const eventTitle = raceName || 'Official Athletic Event';
+
+  if (!resendApiKey) {
+    return {
+      success: false,
+      error: 'RESEND_API_KEY is not configured in settings or environment variables.',
+      hint: 'Add your Resend API Key in Settings or set RESEND_API_KEY in .env.',
+      passUrl,
+    };
+  }
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8"></head>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0f172a; color: #ffffff; padding: 32px 16px;">
+      <div style="max-width: 560px; margin: 0 auto; background: #1e293b; border-radius: 20px; overflow: hidden; border: 1px solid #334155;">
+        <div style="background: linear-gradient(135deg, #0284c7, #2563eb); padding: 28px 24px; text-align: center;">
+          <h1 style="margin: 0; font-size: 20px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;">${eventTitle}</h1>
+          <p style="margin: 6px 0 0; font-size: 13px; color: #e0f2fe;">Official Digital Participant Pass</p>
+        </div>
+        <div style="padding: 28px 24px;">
+          <p style="margin: 0 0 16px; font-size: 15px; color: #f1f5f9;">Hello <strong>${firstName}</strong>,</p>
+          <p style="margin: 0 0 24px; font-size: 14px; line-height: 1.6; color: #cbd5e1;">
+            Your verified event pass is ready! You can add it directly to <strong>Apple Wallet</strong> or <strong>Google Wallet</strong> for real-time race updates, start wave alerts, and chute check-in.
+          </p>
+          <div style="text-align: center; margin: 32px 0;">
+            <a href="${passUrl}" style="background-color: #38bdf8; color: #0f172a; font-weight: 700; font-size: 14px; padding: 14px 28px; border-radius: 12px; text-decoration: none; display: inline-block;">
+              View & Add to Wallet →
+            </a>
+          </div>
+          <p style="margin: 24px 0 0; font-size: 12px; color: #94a3b8; text-align: center;">
+            Direct link: <a href="${passUrl}" style="color: #38bdf8; word-break: break-all;">${passUrl}</a>
+          </p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const fromAddress = d1Db.settings.emailFrom || 'Wallet Pass <onboarding@resend.dev>';
+
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${resendApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: fromAddress,
+        to: [to],
+        subject: `Your ${eventTitle} Digital Pass is Ready!`,
+        html,
+      }),
+    });
+
+    const resJson: any = await res.json();
+    if (!res.ok) {
+      if (fromAddress !== 'Wallet Pass <onboarding@resend.dev>') {
+        const retry = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${resendApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: 'Wallet Pass <onboarding@resend.dev>',
+            to: [to],
+            subject: `Your ${eventTitle} Digital Pass is Ready!`,
+            html,
+          }),
+        });
+        const retryJson: any = await retry.json();
+        if (retry.ok) {
+          d1Db.logEmail({
+            runner_id: runnerId,
+            to,
+            subject: `Your ${eventTitle} Digital Pass is Ready!`,
+            pass_url: passUrl,
+          });
+          return { success: true, resendId: retryJson.id, passUrl };
+        }
+      }
+
+      const errMsg = resJson.message || resJson.error || 'Resend error';
+      let hint: string | undefined;
+      if (errMsg.toLowerCase().includes('testing emails to your own email address') || errMsg.toLowerCase().includes('testing emails')) {
+        hint = 'Resend free testing mode only sends to the email registered on your Resend account. Verify a custom domain at resend.com/domains to send to any participant.';
+      }
+      return { success: false, error: errMsg, hint, passUrl };
+    }
+
+    d1Db.logEmail({
+      runner_id: runnerId,
+      to,
+      subject: `Your ${eventTitle} Digital Pass is Ready!`,
+      pass_url: passUrl,
+    });
+    return { success: true, resendId: resJson.id, passUrl };
+  } catch (err: any) {
+    return { success: false, error: err.message, passUrl };
+  }
+}
+
+app.post('/api/runner/create', async (req, res) => {
   try {
     const { race_id, email, first_name, last_name, dynamic_data, issue_immediate } = req.body;
     if (!race_id || !email || !first_name || !last_name) {
@@ -526,16 +643,88 @@ app.post('/api/runner/create', (req, res) => {
       issuePassImmediate: issue_immediate !== false,
     });
 
+    const race = d1Db.getRaceById(race_id);
+    const origin = `${req.protocol}://${req.get('host')}`;
+
+    let emailResult: any = { success: false, error: 'Not dispatched' };
     if (pass.status === 'issued') {
-      d1Db.logEmail({
-        runner_id: runner.id,
-        to: runner.email,
-        subject: `Your Race Pass is Ready! Download now`,
-        pass_url: `/pass/${runner.id}`,
+      emailResult = await dispatchPassEmailServer({
+        to: email,
+        firstName: first_name,
+        runnerId: runner.id,
+        raceName: race?.name,
+        origin,
       });
     }
 
-    return res.json({ success: true, data: { runner, pass } });
+    return res.json({
+      success: true,
+      data: {
+        runner,
+        pass,
+        email_delivery: emailResult,
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/runner/send-email', async (req, res) => {
+  try {
+    const { runner_id } = req.body;
+    if (!runner_id) return res.status(400).json({ success: false, error: 'runner_id required' });
+
+    const runner = d1Db.getRunnerById(runner_id);
+    if (!runner) return res.status(404).json({ success: false, error: 'Runner not found' });
+
+    const race = d1Db.getRaceById(runner.race_id);
+    const origin = `${req.protocol}://${req.get('host')}`;
+
+    const emailResult = await dispatchPassEmailServer({
+      to: runner.email,
+      firstName: runner.first_name,
+      runnerId: runner.id,
+      raceName: race?.name,
+      origin,
+    });
+
+    return res.json({
+      success: emailResult.success,
+      message: emailResult.success
+        ? `Pass delivery email dispatched to ${runner.email}`
+        : `Email delivery notice: ${emailResult.error}`,
+      data: emailResult,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/email/test', async (req, res) => {
+  try {
+    const targetEmail = req.body?.to || req.body?.email;
+    if (!targetEmail) return res.status(400).json({ success: false, error: 'Recipient email is required' });
+
+    const runner = d1Db.getRunners()[0];
+    const race = runner ? d1Db.getRaceById(runner.race_id) : undefined;
+    const origin = `${req.protocol}://${req.get('host')}`;
+
+    const emailResult = await dispatchPassEmailServer({
+      to: targetEmail,
+      firstName: req.body?.first_name || runner?.first_name || 'Event Participant',
+      runnerId: runner?.id || 'sample-test-pass',
+      raceName: race?.name || 'Championship Marathon 2026',
+      origin,
+    });
+
+    return res.json({
+      success: emailResult.success,
+      data: emailResult,
+      message: emailResult.success
+        ? `Test email sent to ${targetEmail}! (Resend ID: ${emailResult.resendId})`
+        : `Email delivery failed: ${emailResult.error}`,
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -640,10 +829,11 @@ app.get('/api/settings', (req, res) => {
 });
 
 app.post('/api/settings', (req, res) => {
-  const { walletwalletApiKey, walletwalletApiUrl, resendApiKey, publicDomain } = req.body;
+  const { walletwalletApiKey, walletwalletApiUrl, resendApiKey, emailFrom, publicDomain } = req.body;
   if (walletwalletApiKey !== undefined) d1Db.settings.walletwalletApiKey = walletwalletApiKey;
   if (walletwalletApiUrl !== undefined) d1Db.settings.walletwalletApiUrl = walletwalletApiUrl;
   if (resendApiKey !== undefined) d1Db.settings.resendApiKey = resendApiKey;
+  if (emailFrom !== undefined) d1Db.settings.emailFrom = emailFrom;
   if (publicDomain !== undefined) d1Db.settings.publicDomain = publicDomain;
   return res.json({ success: true, data: d1Db.settings });
 });

@@ -140,19 +140,50 @@ WALLETWALLET_API_URL = "https://api.walletwallet.dev/v1"
 
 ---
 
-## 🔐 Step 7: Configure Production Secrets
+## 🔐 Step 7: Configure Production Secrets & Email Delivery (Resend)
 
-Store sensitive API tokens securely in Cloudflare's encrypted secrets store:
+Pass invitation emails and self-service lookup notifications are delivered using **Resend** (`https://resend.com`).
 
+You have two convenient ways to configure your **RESEND_API_KEY**:
+
+### Method 1: Directly via the Web Application UI (Recommended)
+1. In your deployed application, open the **Admin Console** (`#/admin/cloudflare`).
+2. Click the **API Credentials & Environment** sub-tab.
+3. Paste your Resend API Key (`re_...`) into **RESEND_API_KEY**.
+4. (Optional) Set **EMAIL_FROM** (default: `Wallet Pass <onboarding@resend.dev>`).
+5. Click **Save Configuration to D1**.
+6. Use the built-in **Live Resend Delivery Smoke Test** on the same page to send a test email and verify the live connection!
+
+### Method 2: Via Cloudflare Dashboard / Wrangler CLI
 ```bash
-# 1. walletwallet.dev API Secret Key
-npx wrangler secret put WALLETWALLET_API_KEY
-# Enter your key (e.g. ww_live_sk_...) when prompted
-
-# 2. Resend Transactional Email API Key
+# 1. Resend Transactional Email API Key
 npx wrangler secret put RESEND_API_KEY
 # Enter your Resend token (re_...) when prompted
+
+# 2. walletwallet.dev API Secret Key (optional for mock preview)
+npx wrangler secret put WALLETWALLET_API_KEY
 ```
+*Or in the Cloudflare Dashboard: Go to **Workers & Pages** > Your Project > **Settings** > **Variables and Secrets** > **Add Secret** (`RESEND_API_KEY`).*
+
+---
+
+## ❓ Troubleshooting: "Why didn't I receive an email with the pass?"
+
+If you registered yourself or an attendee but did not receive an email:
+
+1. **Check if RESEND_API_KEY is configured:**
+   - Go to **Admin Console** > **Settings** sub-tab. Check if the status badge shows *Resend Key Active* or *RESEND_API_KEY Missing*. If missing, add your API key from [resend.com/api-keys](https://resend.com/api-keys).
+
+2. **Resend Free Account Testing Restriction (`onboarding@resend.dev`):**
+   - **Crucial:** Resend's free default sender domain (`onboarding@resend.dev`) will **ONLY deliver to the email address you used to register your Resend account**.
+   - If you register a different participant email without a verified domain, Resend rejects it with:
+     `You can only send testing emails to your own email address (...)`.
+   - **Solution:** Either test using your own Resend account email, or add and verify a custom domain (SPF/DKIM) at [resend.com/domains](https://resend.com/domains) and set `EMAIL_FROM` to e.g. `Passes <tickets@yourdomain.com>`.
+
+3. **Check the Participant Roster & Instant Pass Link:**
+   - Every participant created is immediately saved in the Cloudflare D1 database.
+   - In **Races & Participants**, click the **Mail** icon on any runner to retry sending the email with real-time feedback.
+   - Click the **Copy Link** button or **Open Pass** (`ExternalLink` icon) to instantly access the pass URL (`/pass/{runnerId}`) in any iPhone/Android browser without needing email!
 
 ---
 

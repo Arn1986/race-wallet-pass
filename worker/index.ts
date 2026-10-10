@@ -9,12 +9,187 @@ export interface Env {
   WALLETWALLET_API_URL: string;
   WALLETWALLET_API_KEY?: string;
   RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
 }
 
 const DEFAULT_ORG_ID = 'org-3fstriders';
 
+// System settings helpers backed by Cloudflare D1
+async function getSystemSetting(env: Env, key: string): Promise<string | null> {
+  try {
+    const row = await env.DB.prepare('SELECT value FROM SystemSettings WHERE key = ?').bind(key).first<any>();
+    return row?.value || null;
+  } catch {
+    return null;
+  }
+}
+
+async function setSystemSetting(env: Env, key: string, value: string): Promise<void> {
+  try {
+    await env.DB.prepare(`
+      INSERT INTO SystemSettings (key, value, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+    `).bind(key, value).run();
+  } catch (err) {
+    console.warn('SystemSettings save notice:', err);
+  }
+}
+
+// Helper to send transactional pass emails via Resend
+async function sendPassEmail(options: {
+  env: Env;
+  to: string;
+  firstName: string;
+  runnerId: string;
+  raceName?: string;
+  requestOrigin?: string;
+}): Promise<{ success: boolean; error?: string; resendId?: string; hint?: string; passUrl?: string }> {
+  const { env, to, firstName, runnerId, raceName, requestOrigin } = options;
+
+  // 1. Resolve Resend API Key: Check Worker secret first, then D1 SystemSettings
+  const resendApiKey = env.RESEND_API_KEY || (await getSystemSetting(env, 'resendApiKey'));
+
+  // 2. Resolve Public Domain for magic pass link:
+  // - First check D1 system setting
+  // - Then env.PUBLIC_DOMAIN (if not the default dummy 3fstriders.org)
+  // - Then current live requestOrigin (e.g. *.workers.dev or *.pages.dev)
+  const savedDomain = await getSystemSetting(env, 'publicDomain');
+  let publicDomain = '';
+  if (savedDomain && savedDomain.trim()) {
+    publicDomain = savedDomain.trim().replace(/\/$/, '');
+  } else if (env.PUBLIC_DOMAIN && !env.PUBLIC_DOMAIN.includes('3fstriders.org') && !env.PUBLIC_DOMAIN.includes('example.com')) {
+    publicDomain = env.PUBLIC_DOMAIN.replace(/\/$/, '');
+  } else if (requestOrigin && !requestOrigin.includes('localhost') && !requestOrigin.includes('127.0.0.1')) {
+    publicDomain = requestOrigin.replace(/\/$/, '');
+  } else {
+    publicDomain = (requestOrigin || env.PUBLIC_DOMAIN || 'https://race-wallet-pass.arnoldcaisip.workers.dev').replace(/\/$/, '');
+  }
+
+  const passUrl = `${publicDomain}/pass/${runnerId}`;
+  const eventTitle = raceName || 'Official Athletic Event';
+
+  if (!resendApiKey) {
+    console.warn('RESEND_API_KEY not configured in Cloudflare Worker secrets or D1.');
+    return {
+      success: false,
+      error: 'RESEND_API_KEY is not configured in Cloudflare secrets or D1 settings.',
+      hint: 'Add your Resend API Key in the web app under Settings (saved to D1) or run `npx wrangler secret put RESEND_API_KEY`.',
+      passUrl,
+    };
+  }
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8"></head>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0f172a; color: #ffffff; padding: 32px 16px;">
+      <div style="max-width: 560px; margin: 0 auto; background: #1e293b; border-radius: 20px; overflow: hidden; border: 1px solid #334155;">
+        <div style="background: linear-gradient(135deg, #0284c7, #2563eb); padding: 28px 24px; text-align: center;">
+          <h1 style="margin: 0; font-size: 20px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;">${eventTitle}</h1>
+          <p style="margin: 6px 0 0; font-size: 13px; color: #e0f2fe;">Official Digital Participant Pass</p>
+        </div>
+        <div style="padding: 28px 24px;">
+          <p style="margin: 0 0 16px; font-size: 15px; color: #f1f5f9;">Hello <strong>${firstName}</strong>,</p>
+          <p style="margin: 0 0 24px; font-size: 14px; line-height: 1.6; color: #cbd5e1;">
+            Your verified event pass is ready! You can add it directly to <strong>Apple Wallet</strong> or <strong>Google Wallet</strong> for real-time race updates, start wave alerts, and chute check-in.
+          </p>
+          <div style="text-align: center; margin: 32px 0;">
+            <a href="${passUrl}" style="background-color: #38bdf8; color: #0f172a; font-weight: 700; font-size: 14px; padding: 14px 28px; border-radius: 12px; text-decoration: none; display: inline-block;">
+              View & Add to Wallet →
+            </a>
+          </div>
+          <p style="margin: 24px 0 0; font-size: 12px; color: #94a3b8; text-align: center;">
+            Direct link: <a href="${passUrl}" style="color: #38bdf8; word-break: break-all;">${passUrl}</a>
+          </p>
+        </div>
+        <div style="background: #0f172a; padding: 16px 24px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #334155;">
+          Pacific Athletic Series • Powered by Cloudflare Edge & walletwallet.dev
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  // Resend from address:
+  const customEmailFrom = env.EMAIL_FROM || (await getSystemSetting(env, 'emailFrom'));
+  const fromAddress = customEmailFrom || 'Wallet Pass <onboarding@resend.dev>';
+
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${resendApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: fromAddress,
+        to: [to],
+        subject: `Your ${eventTitle} Digital Pass is Ready!`,
+        html,
+      }),
+    });
+
+    const resJson: any = await res.json();
+    if (!res.ok) {
+      // If error was unverified custom domain, retry once with onboarding@resend.dev
+      if (fromAddress !== 'Wallet Pass <onboarding@resend.dev>') {
+        const retry = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${resendApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: 'Wallet Pass <onboarding@resend.dev>',
+            to: [to],
+            subject: `Your ${eventTitle} Digital Pass is Ready!`,
+            html,
+          }),
+        });
+        const retryJson: any = await retry.json();
+        if (retry.ok) {
+          return { success: true, resendId: retryJson.id, passUrl };
+        }
+      }
+
+      const errMsg = resJson.message || resJson.error || 'Resend API error';
+      let hint: string | undefined;
+
+      if (errMsg.toLowerCase().includes('testing emails to your own email address') || errMsg.toLowerCase().includes('testing emails')) {
+        hint = 'Resend free test mode only allows sending to the email registered on your Resend account. To send to any runner, verify a custom domain at resend.com/domains.';
+      } else if (errMsg.toLowerCase().includes('api key') || errMsg.toLowerCase().includes('unauthorized')) {
+        hint = 'The Resend API key appears to be invalid. Verify the key at resend.com/api-keys.';
+      } else if (errMsg.toLowerCase().includes('domain') || errMsg.toLowerCase().includes('from')) {
+        hint = 'Sender domain is not verified. Set EMAIL_FROM to "onboarding@resend.dev" or verify DNS records in Resend.';
+      }
+
+      return {
+        success: false,
+        error: errMsg,
+        hint,
+        passUrl,
+      };
+    }
+
+    return { success: true, resendId: resJson.id, passUrl };
+  } catch (err: any) {
+    return { success: false, error: err.message, passUrl };
+  }
+}
+
 // Auto-seed default organization and template if D1 is freshly provisioned
 async function ensureD1Bootstrap(env: Env): Promise<string> {
+  // 0. Ensure SystemSettings table
+  try {
+    await env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS SystemSettings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+  } catch {}
   // 1. Ensure Organizations table
   try {
     await env.DB.prepare(`
@@ -475,8 +650,97 @@ export default {
 
         const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runnerId).first<any>();
         const pass = await env.DB.prepare('SELECT * FROM Passes WHERE id = ?').bind(passId).first<any>();
+        const race = await env.DB.prepare('SELECT name FROM Races WHERE id = ?').bind(race_id).first<any>();
 
-        return Response.json({ success: true, data: { runner, pass } }, { headers: corsHeaders });
+        // Dispatch transactional pass email via Resend
+        let emailResult: any = { success: false, error: 'Not dispatched' };
+        if (passStatus === 'issued') {
+          emailResult = await sendPassEmail({
+            env,
+            to: email,
+            firstName: first_name,
+            runnerId,
+            raceName: race?.name,
+            requestOrigin: url.origin,
+          });
+        }
+
+        return Response.json({
+          success: true,
+          data: {
+            runner,
+            pass,
+            email_delivery: emailResult,
+          },
+        }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (pathname === '/api/runner/send-email' && request.method === 'POST') {
+      try {
+        const body: any = await request.json();
+        const { runner_id } = body;
+        if (!runner_id) return Response.json({ success: false, error: 'runner_id required' }, { status: 400, headers: corsHeaders });
+
+        const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runner_id).first<any>();
+        if (!runner) return Response.json({ success: false, error: 'Runner not found' }, { status: 404, headers: corsHeaders });
+
+        const race = await env.DB.prepare('SELECT name FROM Races WHERE id = ?').bind(runner.race_id).first<any>();
+
+        const emailResult = await sendPassEmail({
+          env,
+          to: runner.email,
+          firstName: runner.first_name,
+          runnerId: runner.id,
+          raceName: race?.name,
+          requestOrigin: url.origin,
+        });
+
+        return Response.json({
+          success: emailResult.success,
+          message: emailResult.success
+            ? `Pass delivery email dispatched to ${runner.email}`
+            : `Email delivery notice: ${emailResult.error}`,
+          data: emailResult,
+        }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // =========================================================================
+    // TEST EMAIL DISPATCH (POST /api/email/test)
+    // =========================================================================
+    if (pathname === '/api/email/test' && request.method === 'POST') {
+      try {
+        await ensureD1Bootstrap(env);
+        const body: any = await request.json().catch(() => ({}));
+        const targetEmail = body?.to || body?.email;
+        if (!targetEmail) {
+          return Response.json({ success: false, error: 'Recipient email is required' }, { status: 400, headers: corsHeaders });
+        }
+
+        const runner = await env.DB.prepare('SELECT id, first_name, email, race_id FROM Runners LIMIT 1').first<any>();
+        const race = runner ? await env.DB.prepare('SELECT name FROM Races WHERE id = ?').bind(runner.race_id).first<any>() : null;
+
+        const emailResult = await sendPassEmail({
+          env,
+          to: targetEmail,
+          firstName: body.first_name || runner?.first_name || 'Event Participant',
+          runnerId: runner?.id || 'run-test-sample',
+          raceName: race?.name || 'Championship Marathon 2026',
+          requestOrigin: url.origin,
+        });
+
+        return Response.json({
+          success: emailResult.success,
+          data: emailResult,
+          message: emailResult.success
+            ? `Test email sent to ${targetEmail}! (Resend ID: ${emailResult.resendId})`
+            : `Email delivery failed: ${emailResult.error}`,
+        }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
       }
@@ -687,12 +951,27 @@ export default {
         const runner = await env.DB.prepare('SELECT * FROM Runners WHERE LOWER(email) = LOWER(?) LIMIT 1').bind(email).first<any>();
         if (!runner) return Response.json({ success: false, error: 'Registration not found' }, { status: 404, headers: corsHeaders });
 
+        const race = await env.DB.prepare('SELECT name FROM Races WHERE id = ?').bind(runner.race_id).first<any>();
+
+        // Re-dispatch transactional email via Resend
+        const emailResult = await sendPassEmail({
+          env,
+          to: runner.email,
+          firstName: runner.first_name,
+          runnerId: runner.id,
+          raceName: race?.name,
+        });
+
         return Response.json({
           success: true,
+          message: emailResult.success
+            ? `Pass delivery email dispatched to ${runner.email}`
+            : `Found pass, but email delivery error: ${emailResult.error}`,
           data: {
             runner_id: runner.id,
             email: runner.email,
             pass_url: `/pass/${runner.id}`,
+            email_delivery: emailResult,
           },
         }, { headers: corsHeaders });
       } catch (err: any) {
@@ -808,16 +1087,64 @@ export default {
     // =========================================================================
     // SETTINGS (GET, POST)
     // =========================================================================
-    if (pathname === '/api/settings') {
-      return Response.json({
-        success: true,
-        data: {
-          publicDomain: env.PUBLIC_DOMAIN || '',
-          walletwalletApiUrl: env.WALLETWALLET_API_URL || '',
-          hasWalletWalletKey: Boolean(env.WALLETWALLET_API_KEY),
-          hasResendKey: Boolean(env.RESEND_API_KEY),
-        },
-      }, { headers: corsHeaders });
+    if (pathname === '/api/settings' && request.method === 'GET') {
+      try {
+        await ensureD1Bootstrap(env);
+        const resendApiKey = env.RESEND_API_KEY || (await getSystemSetting(env, 'resendApiKey')) || '';
+        const emailFrom = env.EMAIL_FROM || (await getSystemSetting(env, 'emailFrom')) || 'Wallet Pass <onboarding@resend.dev>';
+        const walletwalletApiKey = env.WALLETWALLET_API_KEY || (await getSystemSetting(env, 'walletwalletApiKey')) || '';
+        const walletwalletApiUrl = env.WALLETWALLET_API_URL || (await getSystemSetting(env, 'walletwalletApiUrl')) || 'https://api.walletwallet.dev/v1';
+        const savedDomain = await getSystemSetting(env, 'publicDomain');
+        const publicDomain = savedDomain || (env.PUBLIC_DOMAIN && !env.PUBLIC_DOMAIN.includes('3fstriders.org') ? env.PUBLIC_DOMAIN : url.origin);
+
+        return Response.json({
+          success: true,
+          data: {
+            publicDomain,
+            walletwalletApiUrl,
+            emailFrom,
+            walletwalletApiKey: walletwalletApiKey ? (walletwalletApiKey.slice(0, 7) + '••••••••') : '',
+            resendApiKey: resendApiKey ? (resendApiKey.slice(0, 6) + '••••••••') : '',
+            hasWalletWalletKey: Boolean(walletwalletApiKey),
+            hasResendKey: Boolean(resendApiKey),
+            configuredViaSecret: Boolean(env.RESEND_API_KEY),
+            activeOrigin: url.origin,
+          },
+        }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (pathname === '/api/settings' && request.method === 'POST') {
+      try {
+        await ensureD1Bootstrap(env);
+        const body: any = await request.json();
+        const { walletwalletApiKey, walletwalletApiUrl, resendApiKey, emailFrom, publicDomain } = body;
+
+        if (walletwalletApiKey !== undefined && !walletwalletApiKey.includes('••••')) {
+          await setSystemSetting(env, 'walletwalletApiKey', walletwalletApiKey.trim());
+        }
+        if (walletwalletApiUrl !== undefined) {
+          await setSystemSetting(env, 'walletwalletApiUrl', walletwalletApiUrl.trim());
+        }
+        if (resendApiKey !== undefined && !resendApiKey.includes('••••')) {
+          await setSystemSetting(env, 'resendApiKey', resendApiKey.trim());
+        }
+        if (emailFrom !== undefined) {
+          await setSystemSetting(env, 'emailFrom', emailFrom.trim());
+        }
+        if (publicDomain !== undefined) {
+          await setSystemSetting(env, 'publicDomain', publicDomain.trim());
+        }
+
+        return Response.json({
+          success: true,
+          message: 'System configuration updated successfully in Cloudflare D1!',
+        }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
     }
 
     // Fallback: Serve Frontend Static Assets (via Cloudflare Workers Assets)
@@ -842,21 +1169,14 @@ export default {
           WHERE runner_id = ?
         `).bind(runner_id).run();
 
-        // Optional Resend email dispatch
-        if (env.RESEND_API_KEY && payload?.email) {
-          await fetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${env.RESEND_API_KEY}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              from: 'passes@3fstriders.org',
-              to: payload.email,
-              subject: 'Your Official Digital Race Pass is Ready!',
-              html: `<p>Hello ${payload.first_name},</p><p>Your race pass is ready: <a href="${env.PUBLIC_DOMAIN}/pass/${runner_id}">Download Pass</a></p>`,
-            }),
-          }).catch(() => {});
+        // Resend transactional email dispatch
+        if (payload?.email) {
+          await sendPassEmail({
+            env,
+            to: payload.email,
+            firstName: payload.first_name || 'Participant',
+            runnerId: runner_id,
+          });
         }
 
         message.ack();

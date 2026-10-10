@@ -22,7 +22,8 @@ class D1DatabaseEmulator {
   public settings = {
     walletwalletApiKey: process.env.WALLETWALLET_API_KEY || 'ww_live_sk_89410bfac90184a20bce',
     walletwalletApiUrl: process.env.WALLETWALLET_API_URL || 'https://api.walletwallet.dev/v1',
-    resendApiKey: process.env.RESEND_API_KEY || 're_mock_99214ae874012bcdaef1',
+    resendApiKey: process.env.RESEND_API_KEY || '',
+    emailFrom: process.env.EMAIL_FROM || 'Wallet Pass <onboarding@resend.dev>',
     publicDomain: process.env.PUBLIC_DOMAIN || 'https://walletpass.cloud',
   };
 
