@@ -1,6 +1,10 @@
 name = "wallet-pass-platform"
-main = "./node_modules/astro/dist/cloudflare/entrypoints/server.js"
+main = "worker/index.ts"
 compatibility_date = "2026-10-10"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
 
 # Cloudflare D1 Database
 [[d1_databases]]
