@@ -10,6 +10,8 @@ export const TemplatesTab: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isCreatingNew, setIsCreatingNew] = useState(false);
 
   // Editable Form State
   const [name, setName] = useState('');
@@ -27,21 +29,36 @@ export const TemplatesTab: React.FC = () => {
     try {
       setLoading(true);
       const res = await fetch('/api/templates');
-      const json = await res.json();
+      const json: any = await res.json();
       if (json.success && json.data.length > 0) {
         setTemplates(json.data);
-        if (!selectedId) {
+        if (!selectedId && !isCreatingNew) {
           loadTemplateIntoForm(json.data[0]);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setSaveError(err.message || 'Failed to fetch templates from D1');
     } finally {
       setLoading(false);
     }
   };
 
+  const handleStartNewTemplate = () => {
+    setIsCreatingNew(true);
+    setSelectedId('');
+    setName('New Custom Race Pass');
+    setBackgroundColor('#0f172a');
+    setTextColor('#ffffff');
+    setLabelColor('#38bdf8');
+    setLogoImageUrl('https://images.unsplash.com/photo-1552674605-db6ffd4facb5?auto=format&fit=crop&w=400&q=80');
+    setStripImageUrl('https://images.unsplash.com/photo-1502680390469-be75c86b636f?auto=format&fit=crop&w=1200&q=80');
+    setBarcodeType('PKBarcodeFormatQR');
+    setSaveError(null);
+  };
+
   const loadTemplateIntoForm = (tpl: PassTemplate) => {
+    setIsCreatingNew(false);
     setSelectedId(tpl.id);
     setName(tpl.name);
     setBackgroundColor(tpl.background_color);
@@ -49,6 +66,7 @@ export const TemplatesTab: React.FC = () => {
     setLabelColor(tpl.label_color);
     setLogoImageUrl(tpl.logo_image_url || '');
     setStripImageUrl(tpl.strip_image_url || '');
+    setSaveError(null);
 
     try {
       const s = JSON.parse(tpl.schema_definition || '{}');
@@ -74,6 +92,7 @@ export const TemplatesTab: React.FC = () => {
     try {
       setSaving(true);
       setSaveSuccess(false);
+      setSaveError(null);
 
       const current = templates.find((t) => t.id === selectedId);
       let schema: any = {};
@@ -83,6 +102,29 @@ export const TemplatesTab: React.FC = () => {
         schema = {};
       }
       schema.barcodeType = barcodeType;
+      if (!schema.primaryFields) {
+        schema.primaryFields = [{ key: 'bib', label: 'BIB NUMBER' }];
+      }
+      if (!schema.secondaryFields) {
+        schema.secondaryFields = [
+          { key: 'category', label: 'CATEGORY' },
+          { key: 'wave', label: 'START WAVE' },
+        ];
+      }
+      if (!schema.auxiliaryFields) {
+        schema.auxiliaryFields = [
+          { key: 'corral', label: 'CORRAL' },
+          { key: 'expected_pace', label: 'TARGET PACE' },
+          { key: 'tshirt_size', label: 'SHIRT' },
+        ];
+      }
+      if (!schema.backFields) {
+        schema.backFields = [
+          { key: 'emergency_contact', label: 'Emergency Contact' },
+          { key: 'medical_notes', label: 'Medical Notes' },
+          { key: 'race_rules', label: 'Rules & Regulations' },
+        ];
+      }
 
       const payload = {
         name,
@@ -94,20 +136,36 @@ export const TemplatesTab: React.FC = () => {
         schema_definition: JSON.stringify(schema),
       };
 
-      const res = await fetch(`/api/templates/${selectedId}`, {
-        method: 'PUT',
+      const isNew = !selectedId || isCreatingNew;
+      const url = isNew ? '/api/templates' : `/api/templates/${selectedId}`;
+      const method = isNew ? 'POST' : 'PUT';
+
+      const res = await fetch(url, {
+        method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
-      const json = await res.json();
-      if (json.success) {
-        setSaveSuccess(true);
-        setTimeout(() => setSaveSuccess(false), 3000);
-        await fetchTemplates();
+      const json: any = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || 'Failed to save template to D1 database');
       }
-    } catch (err) {
+
+      setSaveSuccess(true);
+      setIsCreatingNew(false);
+      setTimeout(() => setSaveSuccess(false), 4000);
+
+      // Re-fetch templates and select the created/updated one
+      const refreshedRes = await fetch('/api/templates');
+      const refreshedJson: any = await refreshedRes.json();
+      if (refreshedJson.success && refreshedJson.data) {
+        setTemplates(refreshedJson.data);
+        const activeItem = json.data?.id ? json.data : refreshedJson.data[0];
+        if (activeItem) loadTemplateIntoForm(activeItem);
+      }
+    } catch (err: any) {
       console.error(err);
+      setSaveError(err.message || 'Error saving template to Cloudflare D1');
     } finally {
       setSaving(false);
     }
@@ -206,13 +264,13 @@ export const TemplatesTab: React.FC = () => {
         </div>
 
         {/* Template Selector Bar */}
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
           {templates.map((tpl) => (
             <button
               key={tpl.id}
               onClick={() => handleSelectTemplate(tpl.id)}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                tpl.id === selectedId
+                tpl.id === selectedId && !isCreatingNew
                   ? 'bg-sky-500 text-slate-950 font-bold shadow'
                   : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
               }`}
@@ -220,6 +278,19 @@ export const TemplatesTab: React.FC = () => {
               {tpl.name}
             </button>
           ))}
+
+          <button
+            onClick={handleStartNewTemplate}
+            type="button"
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5 ${
+              isCreatingNew
+                ? 'bg-emerald-500 text-slate-950 shadow'
+                : 'bg-slate-900 text-emerald-400 hover:bg-slate-800 border border-emerald-500/30'
+            }`}
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>New Template</span>
+          </button>
         </div>
       </div>
 
@@ -228,6 +299,26 @@ export const TemplatesTab: React.FC = () => {
         {/* Left Column: Form Editor (7 cols) */}
         <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6">
           <form onSubmit={handleSave} className="space-y-6 text-xs">
+            {/* Creation Mode Indicator or Error Banner */}
+            {isCreatingNew && (
+              <div className="p-3 bg-emerald-950/40 border border-emerald-500/30 rounded-2xl text-emerald-300 flex items-center justify-between text-xs">
+                <span>✨ Creating a brand new pass template. Fill details and click Save below.</span>
+                <button
+                  type="button"
+                  onClick={() => templates.length > 0 && loadTemplateIntoForm(templates[0])}
+                  className="text-[11px] underline text-emerald-400 cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+
+            {saveError && (
+              <div className="p-3 bg-rose-950/60 border border-rose-500/40 rounded-2xl text-rose-300 text-xs">
+                ⚠️ {saveError}
+              </div>
+            )}
+
             {/* Template Name */}
             <div>
               <label className="block uppercase font-bold text-slate-400 mb-1.5">
@@ -394,7 +485,7 @@ export const TemplatesTab: React.FC = () => {
                 className="px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold flex items-center space-x-2 transition-all cursor-pointer shadow-lg shadow-sky-500/20 disabled:opacity-50"
               >
                 <Save className="w-4 h-4" />
-                <span>{saving ? 'Updating D1...' : 'Save Template Changes'}</span>
+                <span>{saving ? 'Saving to D1...' : isCreatingNew ? 'Create & Save Template in D1' : 'Save Template Changes'}</span>
               </button>
             </div>
           </form>
