@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Ignore all lockfiles
+package-lock.json
+bun.lock
+bun.lockb
+yarn.lock
+pnpm-lock.yaml

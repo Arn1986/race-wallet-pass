@@ -14,15 +14,21 @@ export interface Env {
 const DEFAULT_ORG_ID = 'org-3fstriders';
 
 // Auto-seed default organization and template if D1 is freshly provisioned
-async function ensureD1Bootstrap(env: Env) {
+async function ensureD1Bootstrap(env: Env): Promise<string> {
+  // 1. Ensure Organizations table
   try {
-    // 0. Auto-create tables if they don't exist yet
-    await env.DB.exec(`
+    await env.DB.prepare(`
       CREATE TABLE IF NOT EXISTS Organizations (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
+      )
+    `).run();
+  } catch {}
+
+  // 2. Ensure Templates table
+  try {
+    await env.DB.prepare(`
       CREATE TABLE IF NOT EXISTS Templates (
         id TEXT PRIMARY KEY,
         org_id TEXT NOT NULL,
@@ -34,8 +40,15 @@ async function ensureD1Bootstrap(env: Env) {
         background_image_url TEXT,
         strip_image_url TEXT,
         schema_definition TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (org_id) REFERENCES Organizations(id) ON DELETE CASCADE
+      )
+    `).run();
+  } catch {}
+
+  // 3. Ensure Races table
+  try {
+    await env.DB.prepare(`
       CREATE TABLE IF NOT EXISTS Races (
         id TEXT PRIMARY KEY,
         org_id TEXT NOT NULL,
@@ -44,8 +57,16 @@ async function ensureD1Bootstrap(env: Env) {
         event_date DATETIME,
         location TEXT,
         field_mapping TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (org_id) REFERENCES Organizations(id) ON DELETE CASCADE,
+        FOREIGN KEY (template_id) REFERENCES Templates(id)
+      )
+    `).run();
+  } catch {}
+
+  // 4. Ensure Runners table
+  try {
+    await env.DB.prepare(`
       CREATE TABLE IF NOT EXISTS Runners (
         id TEXT PRIMARY KEY,
         race_id TEXT NOT NULL,
@@ -53,8 +74,16 @@ async function ensureD1Bootstrap(env: Env) {
         first_name TEXT NOT NULL,
         last_name TEXT NOT NULL,
         dynamic_data TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (race_id) REFERENCES Races(id) ON DELETE CASCADE,
+        UNIQUE(race_id, email)
+      )
+    `).run();
+  } catch {}
+
+  // 5. Ensure Passes table
+  try {
+    await env.DB.prepare(`
       CREATE TABLE IF NOT EXISTS Passes (
         id TEXT PRIMARY KEY,
         runner_id TEXT NOT NULL UNIQUE,
@@ -63,16 +92,30 @@ async function ensureD1Bootstrap(env: Env) {
         installed_apple BOOLEAN DEFAULT 0,
         installed_google BOOLEAN DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (runner_id) REFERENCES Runners(id) ON DELETE CASCADE
+      )
+    `).run();
+  } catch {}
 
-    // 1. Ensure Organization
-    await env.DB.prepare(
-      "INSERT OR IGNORE INTO Organizations (id, name) VALUES (?, '3F Striders Athletic Club')"
-    ).bind(DEFAULT_ORG_ID).run();
+  // 6. Guarantee that an organization exists in the Organizations table
+  let activeOrgId = DEFAULT_ORG_ID;
+  try {
+    const existingOrg = await env.DB.prepare('SELECT id FROM Organizations LIMIT 1').first<any>();
+    if (existingOrg && existingOrg.id) {
+      activeOrgId = existingOrg.id;
+    } else {
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO Organizations (id, name) VALUES (?, '3F Striders Athletic Club')"
+      ).bind(DEFAULT_ORG_ID).run();
+      activeOrgId = DEFAULT_ORG_ID;
+    }
+  } catch (err) {
+    console.error('Organization bootstrap notice:', err);
+  }
 
-    // 2. Ensure initial template if none exist
+  // 7. Seed initial template if none exist
+  try {
     const countResult = await env.DB.prepare("SELECT COUNT(*) as cnt FROM Templates").first<any>();
     if (!countResult || countResult.cnt === 0) {
       const defaultSchema = JSON.stringify({
@@ -105,35 +148,13 @@ async function ensureD1Bootstrap(env: Env) {
           'https://images.unsplash.com/photo-1502680390469-be75c86b636f?auto=format&fit=crop&w=1200&q=80',
           ?
         )
-      `).bind(DEFAULT_ORG_ID, defaultSchema).run();
-
-      // Seed initial sample race if none exist
-      const raceCount = await env.DB.prepare("SELECT COUNT(*) as cnt FROM Races").first<any>();
-      if (!raceCount || raceCount.cnt === 0) {
-        const mapping = JSON.stringify({
-          bib: 'bib_number',
-          category: 'race_division',
-          wave: 'start_wave',
-          corral: 'corral_letter',
-          expected_pace: 'target_pace',
-          tshirt_size: 'tshirt_size',
-          emergency_contact: 'emergency_contact',
-          medical_notes: 'medical_notes',
-        });
-
-        await env.DB.prepare(`
-          INSERT OR IGNORE INTO Races (
-            id, org_id, template_id, name, event_date, location, field_mapping
-          ) VALUES (
-            'race-gg-marathon-2026', ?, 'tpl-marathon-vip', '3F Striders Annual Marathon 2026',
-            '2026-11-15T06:30:00Z', 'San Francisco, CA', ?
-          )
-        `).bind(DEFAULT_ORG_ID, mapping).run();
-      }
+      `).bind(activeOrgId, defaultSchema).run();
     }
   } catch (err) {
-    console.error('D1 Bootstrap Notice:', err);
+    console.error('Template bootstrap notice:', err);
   }
+
+  return activeOrgId;
 }
 
 export default {
@@ -183,7 +204,7 @@ export default {
 
     if (pathname === '/api/templates' && request.method === 'POST') {
       try {
-        await ensureD1Bootstrap(env);
+        const confirmedOrgId = await ensureD1Bootstrap(env);
         const body: any = await request.json();
         const {
           name,
@@ -200,6 +221,23 @@ export default {
           return Response.json({ success: false, error: 'Template name is required' }, { status: 400, headers: corsHeaders });
         }
 
+        // Guarantee requested or default organization exists in Organizations table
+        let finalOrgId = confirmedOrgId;
+        const targetOrg = org_id || DEFAULT_ORG_ID;
+        try {
+          const checkOrg = await env.DB.prepare('SELECT id FROM Organizations WHERE id = ?').bind(targetOrg).first<any>();
+          if (checkOrg && checkOrg.id) {
+            finalOrgId = checkOrg.id;
+          } else {
+            await env.DB.prepare(
+              "INSERT OR IGNORE INTO Organizations (id, name) VALUES (?, '3F Striders Athletic Club')"
+            ).bind(targetOrg).run();
+            finalOrgId = targetOrg;
+          }
+        } catch {
+          finalOrgId = confirmedOrgId;
+        }
+
         const templateId = `tpl-${crypto.randomUUID()}`;
         const schemaStr = typeof schema_definition === 'string' ? schema_definition : JSON.stringify(schema_definition || {});
 
@@ -210,7 +248,7 @@ export default {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           templateId,
-          org_id || DEFAULT_ORG_ID,
+          finalOrgId,
           name,
           background_color || '#0f172a',
           text_color || '#ffffff',
@@ -315,11 +353,28 @@ export default {
 
     if (pathname === '/api/races' && request.method === 'POST') {
       try {
-        await ensureD1Bootstrap(env);
+        const confirmedOrgId = await ensureD1Bootstrap(env);
         const body: any = await request.json();
         const { name, template_id, event_date, location, field_mapping, org_id } = body;
         if (!name || !template_id) {
           return Response.json({ success: false, error: 'Name and template_id are required' }, { status: 400, headers: corsHeaders });
+        }
+
+        // Guarantee requested or default organization exists
+        let finalOrgId = confirmedOrgId;
+        const targetOrg = org_id || DEFAULT_ORG_ID;
+        try {
+          const checkOrg = await env.DB.prepare('SELECT id FROM Organizations WHERE id = ?').bind(targetOrg).first<any>();
+          if (checkOrg && checkOrg.id) {
+            finalOrgId = checkOrg.id;
+          } else {
+            await env.DB.prepare(
+              "INSERT OR IGNORE INTO Organizations (id, name) VALUES (?, '3F Striders Athletic Club')"
+            ).bind(targetOrg).run();
+            finalOrgId = targetOrg;
+          }
+        } catch {
+          finalOrgId = confirmedOrgId;
         }
 
         const raceId = `race-${crypto.randomUUID()}`;
@@ -330,7 +385,7 @@ export default {
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `).bind(
           raceId,
-          org_id || DEFAULT_ORG_ID,
+          finalOrgId,
           template_id,
           name,
           event_date || new Date().toISOString(),
