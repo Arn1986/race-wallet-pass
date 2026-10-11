@@ -53,6 +53,7 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
     runner: any;
     pass: any;
     emailDelivery: any;
+    walletwalletDelivery?: any;
   } | null>(null);
   const [notificationMsg, setNotificationMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
@@ -211,6 +212,7 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
           runner: json.data?.runner || { id: json.data?.runner_id, first_name: newRunnerFirst, last_name: newRunnerLast, email: registeredEmail },
           pass: json.data?.pass,
           emailDelivery: json.data?.email_delivery,
+          walletwalletDelivery: json.data?.walletwallet_delivery,
         });
 
         if (json.data?.email_delivery?.success) {
@@ -950,9 +952,61 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                   <div className="text-slate-400 text-xs">{participantResultModal.runner.email}</div>
                 </div>
                 <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
-                  Pass Issued
+                  Pass Issued in D1
                 </span>
               </div>
+
+              {/* WalletWallet Pass Issuance Card */}
+              {participantResultModal.walletwalletDelivery?.success ? (
+                <div className="p-3.5 rounded-2xl bg-sky-950/40 border border-sky-800/60 text-sky-300 space-y-2">
+                  <div className="font-bold text-white flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-sky-400" />
+                      Signed Pass Issued via WalletWallet.dev ({participantResultModal.walletwalletDelivery.tierUsed === 'free' ? 'Free Tier' : 'Pro Tier'})
+                    </span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-sky-900/60 text-sky-300 font-mono">
+                      {participantResultModal.walletwalletDelivery.serialNumber ? `Serial: ${participantResultModal.walletwalletDelivery.serialNumber.slice(0, 10)}...` : 'Active'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-300">
+                    Dual Apple Wallet (.pkpass) and Google Wallet tokens generated globally via Cloudflare Workers.
+                  </p>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {participantResultModal.pass?.google_save_url && (
+                      <a
+                        href={participantResultModal.pass.google_save_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-white font-semibold text-[11px] flex items-center gap-1.5 transition-all"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-sky-400" />
+                        <span>Direct Save to Google Wallet ↗</span>
+                      </a>
+                    )}
+                    {participantResultModal.pass?.share_url && (
+                      <a
+                        href={participantResultModal.pass.share_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-sky-400 font-semibold text-[11px] flex items-center gap-1.5 transition-all"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>WalletWallet Install Page ↗</span>
+                      </a>
+                    )}
+                  </div>
+                </div>
+              ) : participantResultModal.walletwalletDelivery?.error ? (
+                <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 text-slate-400 space-y-1 text-[11px]">
+                  <div className="font-semibold text-slate-300 flex items-center gap-1.5">
+                    <Info className="w-3.5 h-3.5 text-slate-400" />
+                    WalletWallet Notice: {participantResultModal.walletwalletDelivery.error}
+                  </div>
+                  <p>
+                    Pass generated in Edge D1 database. To issue through official WalletWallet certificates (free tier up to 1,000 passes/mo), configure your key in Admin Settings.
+                  </p>
+                </div>
+              ) : null}
 
               {/* Email Delivery Status Card */}
               {participantResultModal.emailDelivery?.success ? (
@@ -982,7 +1036,7 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                   </p>
                   {participantResultModal.emailDelivery?.hint && (
                     <div className="p-2.5 rounded-xl bg-amber-900/30 border border-amber-800/40 text-[10.5px] text-amber-300 leading-relaxed">
-                      💡 <strong>Hint:</strong> {participantResultModal.emailDelivery.hint}
+                      💡 <strong>Notice:</strong> {participantResultModal.emailDelivery.hint}
                     </div>
                   )}
                   <div className="text-[11px] text-slate-400 pt-1 border-t border-amber-800/40 flex items-center justify-between">

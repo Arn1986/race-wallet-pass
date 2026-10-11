@@ -46,6 +46,24 @@ app.get('/api/pass/download/:id', async (req, res) => {
     // Mark Apple Wallet installation
     d1Db.updatePass(pass.id, { installed_apple: 1 });
 
+    let bibNumber = 'pass';
+    try {
+      const dyn = JSON.parse(runner.dynamic_data || '{}');
+      bibNumber = dyn.bib_number || dyn.bib || 'pass';
+    } catch {
+      // ignore
+    }
+
+    // If signed .pkpass binary was returned from WalletWallet API
+    if (pass.apple_pass_base64) {
+      const buffer = Buffer.from(pass.apple_pass_base64, 'base64');
+      res.setHeader('Content-Type', 'application/vnd.apple.pkpass');
+      res.setHeader('Content-Disposition', `attachment; filename="pass_${bibNumber}.pkpass"`);
+      res.setHeader('Content-Length', buffer.length);
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return res.end(buffer);
+    }
+
     const buffer = await proxyOrGeneratePkpass({
       runner,
       race,
@@ -54,14 +72,6 @@ app.get('/api/pass/download/:id', async (req, res) => {
       walletwalletApiKey: d1Db.settings.walletwalletApiKey,
       walletwalletApiUrl: d1Db.settings.walletwalletApiUrl,
     });
-
-    let bibNumber = 'pass';
-    try {
-      const dyn = JSON.parse(runner.dynamic_data || '{}');
-      bibNumber = dyn.bib_number || dyn.bib || 'pass';
-    } catch {
-      // ignore
-    }
 
     res.setHeader('Content-Type', 'application/vnd.apple.pkpass');
     res.setHeader('Content-Disposition', `attachment; filename="pass_${bibNumber}.pkpass"`);
@@ -74,6 +84,190 @@ app.get('/api/pass/download/:id', async (req, res) => {
     return res.status(500).json({ success: false, error: error.message || 'Internal server error streaming pass' });
   }
 });
+
+// Normalize WalletWallet Base URL (must be https://api.walletwallet.dev, without trailing /v1 or /api)
+function normalizeWalletWalletUrl(rawUrl?: string): string {
+  if (!rawUrl || !rawUrl.trim()) return 'https://api.walletwallet.dev';
+  let url = rawUrl.trim().replace(/\/+$/, '');
+  url = url.replace(/\/v1$/, '').replace(/\/api$/, '');
+  return url || 'https://api.walletwallet.dev';
+}
+
+// Derive WalletWallet colorPreset for Free Tier (Non-Pro) from hex
+function deriveColorPreset(hexColor?: string): 'dark' | 'blue' | 'green' | 'red' | 'purple' | 'orange' {
+  if (!hexColor || !hexColor.startsWith('#')) return 'dark';
+  const hex = hexColor.replace('#', '');
+  if (hex.length !== 6 && hex.length !== 3) return 'dark';
+  const r = parseInt(hex.length === 3 ? hex[0] + hex[0] : hex.slice(0, 2), 16);
+  const g = parseInt(hex.length === 3 ? hex[1] + hex[1] : hex.slice(2, 4), 16);
+  const b = parseInt(hex.length === 3 ? hex[2] + hex[2] : hex.slice(4, 6), 16);
+
+  if (g > 100 && g > r * 1.2 && g > b * 1.1) return 'green';
+  if (b > 120 && b > r * 1.1 && b > g) return 'blue';
+  if (r > 120 && r > g * 1.5 && r > b * 1.5) return 'red';
+  if (r > 100 && b > 100 && g < Math.min(r, b) * 0.8) return 'purple';
+  if (r > 150 && g > 80 && g < r && b < 60) return 'orange';
+  return 'dark';
+}
+
+// Call WalletWallet API (https://www.walletwallet.dev/docs)
+// Supports Free tier (up to 1,000 passes/mo, no credit card required) & Pro tier
+async function createWalletWalletPassServer(options: {
+  apiKey: string;
+  baseUrl: string;
+  plan: 'free' | 'pro';
+  raceName: string;
+  orgName?: string;
+  runner: {
+    id: string;
+    first_name: string;
+    last_name: string;
+    email: string;
+    dynamic_data?: any;
+  };
+  template?: {
+    background_color?: string;
+    text_color?: string;
+    label_color?: string;
+    logo_image_url?: string;
+    strip_image_url?: string;
+  };
+}): Promise<{
+  success: boolean;
+  serialNumber?: string;
+  googleSaveUrl?: string;
+  applePass?: string;
+  shareUrl?: string;
+  error?: string;
+  tierUsed: 'free' | 'pro';
+}> {
+  const { apiKey, baseUrl, plan, raceName, orgName, runner, template } = options;
+  if (!apiKey || !apiKey.trim()) {
+    return { success: false, error: 'WALLETWALLET_API_KEY not configured', tierUsed: plan };
+  }
+
+  let dyn: Record<string, any> = {};
+  if (typeof runner.dynamic_data === 'string') {
+    try { dyn = JSON.parse(runner.dynamic_data); } catch { dyn = {}; }
+  } else if (runner.dynamic_data && typeof runner.dynamic_data === 'object') {
+    dyn = runner.dynamic_data;
+  }
+
+  const bibNumber = String(dyn.bib || dyn.bib_number || runner.id.replace('run-', '').slice(0, 8).toUpperCase());
+  const division = String(dyn.category || dyn.division || dyn.race_division || 'General');
+  const wave = String(dyn.wave || dyn.start_wave || 'Open');
+  const emergency = String(dyn.emergency_contact || 'None listed');
+
+  const baseEndpoint = normalizeWalletWalletUrl(baseUrl);
+
+  // Common fields (accepted in ALL tiers, including Free)
+  const body: any = {
+    barcodeValue: bibNumber,
+    barcodeFormat: 'QR',
+    barcodeAltText: `BIB #${bibNumber}`,
+    logoText: (raceName || 'Athletic Pass').slice(0, 64),
+    description: `${raceName} Participant Pass`.slice(0, 128),
+    organizationName: (orgName || 'Pacific Athletic Series').slice(0, 64),
+    sharingProhibited: false,
+    primaryFields: [
+      { label: 'BIB NUMBER', value: bibNumber },
+    ],
+    secondaryFields: [
+      { label: 'PARTICIPANT', value: `${runner.first_name} ${runner.last_name}`.slice(0, 64) },
+      { label: 'DIVISION', value: division.slice(0, 64) },
+    ],
+    headerFields: [
+      { label: 'WAVE', value: wave.slice(0, 64) },
+    ],
+    backFields: [
+      { label: 'Emergency Contact', value: emergency.slice(0, 256) },
+      { label: 'Runner Email', value: runner.email.slice(0, 128) },
+      { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
+    ],
+  };
+
+  if (plan === 'free') {
+    // Non-Pro Free Tier per walletwallet.dev/docs:
+    // Explicitly use colorPreset and omit Pro-only fields (color, logoURL, stripURL)
+    body.colorPreset = deriveColorPreset(template?.background_color);
+  } else {
+    // Pro Tier:
+    if (template?.background_color && template.background_color.startsWith('#')) {
+      body.color = template.background_color;
+    } else {
+      body.colorPreset = deriveColorPreset(template?.background_color);
+    }
+    if (template?.logo_image_url && template.logo_image_url.startsWith('https://')) {
+      body.logoURL = template.logo_image_url;
+    }
+    if (template?.strip_image_url && template.strip_image_url.startsWith('https://')) {
+      body.stripURL = template.strip_image_url;
+    }
+  }
+
+  try {
+    const res = await fetch(`${baseEndpoint}/api/passes`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey.trim()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    const resJson: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (plan === 'pro') {
+        const fallbackBody = { ...body };
+        delete fallbackBody.color;
+        delete fallbackBody.logoURL;
+        delete fallbackBody.stripURL;
+        fallbackBody.colorPreset = deriveColorPreset(template?.background_color);
+
+        const retry = await fetch(`${baseEndpoint}/api/passes`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey.trim()}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(fallbackBody),
+        });
+        const retryJson: any = await retry.json().catch(() => ({}));
+        if (retry.ok && retryJson.serialNumber) {
+          return {
+            success: true,
+            serialNumber: retryJson.serialNumber,
+            googleSaveUrl: retryJson.googleSaveUrl,
+            applePass: retryJson.applePass,
+            shareUrl: retryJson.shareUrl,
+            tierUsed: 'free',
+          };
+        }
+      }
+
+      return {
+        success: false,
+        error: resJson.error || resJson.message || `WalletWallet returned HTTP ${res.status}`,
+        tierUsed: plan,
+      };
+    }
+
+    return {
+      success: true,
+      serialNumber: resJson.serialNumber,
+      googleSaveUrl: resJson.googleSaveUrl,
+      applePass: resJson.applePass,
+      shareUrl: resJson.shareUrl,
+      tierUsed: plan,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err.message || 'Network error connecting to WalletWallet API',
+      tierUsed: plan,
+    };
+  }
+}
 
 // -----------------------------------------------------------------------------
 // 2. Core Workflow B: Live Pass Updates
@@ -101,10 +295,11 @@ app.put('/api/runner/update', async (req, res) => {
     const updatedRunner = d1Db.updateRunner(runner_id, updates);
     const pass = d1Db.getPassByRunnerId(runner_id);
 
-    // Call walletwallet.dev PUT endpoint if external API configured
-    if (d1Db.settings.walletwalletApiKey && pass?.walletwallet_pass_id) {
+    // Call walletwallet.dev PUT endpoint ONLY IF Pro plan is active
+    if (d1Db.settings.walletwalletApiKey && d1Db.settings.walletwalletPlan === 'pro' && pass?.walletwallet_pass_id && !pass.walletwallet_pass_id.startsWith('ww_run-')) {
       try {
-        await fetch(`${d1Db.settings.walletwalletApiUrl}/passes/${pass.walletwallet_pass_id}`, {
+        const baseUrl = normalizeWalletWalletUrl(d1Db.settings.walletwalletApiUrl);
+        await fetch(`${baseUrl}/api/passes/${pass.walletwallet_pass_id}`, {
           method: 'PUT',
           headers: {
             Authorization: `Bearer ${d1Db.settings.walletwalletApiKey}`,
@@ -139,6 +334,9 @@ app.put('/api/runner/update', async (req, res) => {
         pass,
         pushLog,
       },
+      plan_note: d1Db.settings.walletwalletPlan === 'free'
+        ? 'D1 updated. (WalletWallet live push updates require Pro tier per docs).'
+        : 'D1 & WalletWallet updated.',
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
@@ -162,17 +360,18 @@ app.post('/api/runner/revoke', async (req, res) => {
 
     d1Db.updatePass(pass.id, { status: 'revoked' });
 
-    // Call DELETE or void on walletwallet.dev
-    if (d1Db.settings.walletwalletApiKey && pass.walletwallet_pass_id) {
+    // Call DELETE on walletwallet.dev per docs (DELETE /api/passes/<serial>)
+    if (d1Db.settings.walletwalletApiKey && pass.walletwallet_pass_id && !pass.walletwallet_pass_id.startsWith('ww_run-')) {
       try {
-        await fetch(`${d1Db.settings.walletwalletApiUrl}/passes/${pass.walletwallet_pass_id}/void`, {
-          method: 'POST',
+        const baseUrl = normalizeWalletWalletUrl(d1Db.settings.walletwalletApiUrl);
+        await fetch(`${baseUrl}/api/passes/${pass.walletwallet_pass_id}`, {
+          method: 'DELETE',
           headers: {
             Authorization: `Bearer ${d1Db.settings.walletwalletApiKey}`,
           },
         });
       } catch (err) {
-        console.warn('walletwallet.dev void notice:', err);
+        console.warn('walletwallet.dev delete notice:', err);
       }
     }
 
@@ -517,8 +716,10 @@ async function dispatchPassEmailServer(options: {
   runnerId: string;
   raceName?: string;
   origin?: string;
+  googleSaveUrl?: string;
+  shareUrl?: string;
 }): Promise<{ success: boolean; error?: string; resendId?: string; hint?: string; passUrl?: string }> {
-  const { to, firstName, runnerId, raceName, origin } = options;
+  const { to, firstName, runnerId, raceName, origin, googleSaveUrl, shareUrl } = options;
   const resendApiKey = d1Db.settings.resendApiKey;
   const domain = (d1Db.settings.publicDomain && !d1Db.settings.publicDomain.includes('3fstriders.org') ? d1Db.settings.publicDomain : (origin || 'http://localhost:3000')).replace(/\/$/, '');
   const passUrl = `${domain}/pass/${runnerId}`;
@@ -532,6 +733,18 @@ async function dispatchPassEmailServer(options: {
       passUrl,
     };
   }
+
+  const googleButtonHtml = googleSaveUrl
+    ? `<a href="${googleSaveUrl}" style="background-color: #1e293b; border: 1px solid #475569; color: #ffffff; font-weight: 700; font-size: 14px; padding: 14px 24px; border-radius: 12px; text-decoration: none; display: inline-block; margin: 6px;">
+        Save to Google Wallet →
+       </a>`
+    : '';
+
+  const shareLinkHtml = shareUrl
+    ? `<p style="margin: 12px 0 0; font-size: 12px; color: #94a3b8; text-align: center;">
+        Device-Aware Pass Page: <a href="${shareUrl}" style="color: #38bdf8; text-decoration: underline;">${shareUrl}</a>
+       </p>`
+    : '';
 
   const html = `
     <!DOCTYPE html>
@@ -548,14 +761,19 @@ async function dispatchPassEmailServer(options: {
           <p style="margin: 0 0 24px; font-size: 14px; line-height: 1.6; color: #cbd5e1;">
             Your verified event pass is ready! You can add it directly to <strong>Apple Wallet</strong> or <strong>Google Wallet</strong> for real-time race updates, start wave alerts, and chute check-in.
           </p>
-          <div style="text-align: center; margin: 32px 0;">
-            <a href="${passUrl}" style="background-color: #38bdf8; color: #0f172a; font-weight: 700; font-size: 14px; padding: 14px 28px; border-radius: 12px; text-decoration: none; display: inline-block;">
-              View & Add to Wallet →
+          <div style="text-align: center; margin: 28px 0;">
+            <a href="${passUrl}" style="background-color: #38bdf8; color: #0f172a; font-weight: 700; font-size: 14px; padding: 14px 28px; border-radius: 12px; text-decoration: none; display: inline-block; margin: 6px;">
+              View & Add to Apple Wallet →
             </a>
+            ${googleButtonHtml}
           </div>
-          <p style="margin: 24px 0 0; font-size: 12px; color: #94a3b8; text-align: center;">
-            Direct link: <a href="${passUrl}" style="color: #38bdf8; word-break: break-all;">${passUrl}</a>
+          <p style="margin: 20px 0 0; font-size: 12px; color: #94a3b8; text-align: center;">
+            Direct pass link: <a href="${passUrl}" style="color: #38bdf8; word-break: break-all;">${passUrl}</a>
           </p>
+          ${shareLinkHtml}
+        </div>
+        <div style="background: #0f172a; padding: 16px 24px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #334155;">
+          Powered by Node/Express & walletwallet.dev API • Pacific Athletic Series
         </div>
       </div>
     </body>
@@ -644,7 +862,41 @@ app.post('/api/runner/create', async (req, res) => {
     });
 
     const race = d1Db.getRaceById(race_id);
+    const template = race ? d1Db.getTemplateById(race.template_id) : undefined;
     const origin = `${req.protocol}://${req.get('host')}`;
+
+    // WalletWallet API pass creation (https://www.walletwallet.dev/docs)
+    let wwResult: any = { success: false, error: 'WALLETWALLET_API_KEY not configured' };
+    if (d1Db.settings.walletwalletApiKey) {
+      wwResult = await createWalletWalletPassServer({
+        apiKey: d1Db.settings.walletwalletApiKey,
+        baseUrl: d1Db.settings.walletwalletApiUrl,
+        plan: d1Db.settings.walletwalletPlan,
+        raceName: race?.name || 'Athletic Event',
+        orgName: 'Pacific Athletic Series',
+        runner: {
+          id: runner.id,
+          first_name,
+          last_name,
+          email,
+          dynamic_data,
+        },
+        template,
+      });
+
+      if (wwResult.success && wwResult.serialNumber) {
+        pass.walletwallet_pass_id = wwResult.serialNumber;
+        pass.google_save_url = wwResult.googleSaveUrl;
+        pass.share_url = wwResult.shareUrl;
+        pass.apple_pass_base64 = wwResult.applePass;
+        d1Db.updatePass(pass.id, {
+          walletwallet_pass_id: wwResult.serialNumber,
+          google_save_url: wwResult.googleSaveUrl,
+          share_url: wwResult.shareUrl,
+          apple_pass_base64: wwResult.applePass,
+        });
+      }
+    }
 
     let emailResult: any = { success: false, error: 'Not dispatched' };
     if (pass.status === 'issued') {
@@ -654,6 +906,8 @@ app.post('/api/runner/create', async (req, res) => {
         runnerId: runner.id,
         raceName: race?.name,
         origin,
+        googleSaveUrl: pass.google_save_url,
+        shareUrl: pass.share_url,
       });
     }
 
@@ -663,6 +917,7 @@ app.post('/api/runner/create', async (req, res) => {
         runner,
         pass,
         email_delivery: emailResult,
+        walletwallet_delivery: wwResult,
       },
     });
   } catch (error: any) {
@@ -678,6 +933,7 @@ app.post('/api/runner/send-email', async (req, res) => {
     const runner = d1Db.getRunnerById(runner_id);
     if (!runner) return res.status(404).json({ success: false, error: 'Runner not found' });
 
+    const pass = d1Db.getPassByRunnerId(runner_id);
     const race = d1Db.getRaceById(runner.race_id);
     const origin = `${req.protocol}://${req.get('host')}`;
 
@@ -687,6 +943,8 @@ app.post('/api/runner/send-email', async (req, res) => {
       runnerId: runner.id,
       raceName: race?.name,
       origin,
+      googleSaveUrl: pass?.google_save_url,
+      shareUrl: pass?.share_url,
     });
 
     return res.json({
@@ -829,13 +1087,62 @@ app.get('/api/settings', (req, res) => {
 });
 
 app.post('/api/settings', (req, res) => {
-  const { walletwalletApiKey, walletwalletApiUrl, resendApiKey, emailFrom, publicDomain } = req.body;
+  const { walletwalletApiKey, walletwalletApiUrl, walletwalletPlan, resendApiKey, emailFrom, publicDomain } = req.body;
   if (walletwalletApiKey !== undefined) d1Db.settings.walletwalletApiKey = walletwalletApiKey;
-  if (walletwalletApiUrl !== undefined) d1Db.settings.walletwalletApiUrl = walletwalletApiUrl;
+  if (walletwalletApiUrl !== undefined) d1Db.settings.walletwalletApiUrl = normalizeWalletWalletUrl(walletwalletApiUrl);
+  if (walletwalletPlan !== undefined) d1Db.settings.walletwalletPlan = walletwalletPlan;
   if (resendApiKey !== undefined) d1Db.settings.resendApiKey = resendApiKey;
   if (emailFrom !== undefined) d1Db.settings.emailFrom = emailFrom;
   if (publicDomain !== undefined) d1Db.settings.publicDomain = publicDomain;
   return res.json({ success: true, data: d1Db.settings });
+});
+
+// -----------------------------------------------------------------------------
+// 14. WalletWallet Connection Status & Quota Verification
+// -----------------------------------------------------------------------------
+app.get('/api/walletwallet/status', async (req, res) => {
+  try {
+    const apiKey = d1Db.settings.walletwalletApiKey;
+    const baseUrl = normalizeWalletWalletUrl(d1Db.settings.walletwalletApiUrl);
+    const plan = d1Db.settings.walletwalletPlan || 'free';
+
+    if (!apiKey) {
+      return res.json({
+        success: false,
+        error: 'WALLETWALLET_API_KEY is not configured yet in Settings or environment variables.',
+        plan,
+        baseUrl,
+      });
+    }
+
+    const usageRes = await fetch(`${baseUrl}/api/auth/usage`, {
+      headers: {
+        Authorization: `Bearer ${apiKey.trim()}`,
+      },
+    });
+
+    const usageJson: any = await usageRes.json().catch(() => ({}));
+    if (!usageRes.ok) {
+      return res.json({
+        success: false,
+        error: usageJson.error || usageJson.message || `WalletWallet returned HTTP ${usageRes.status}`,
+        plan,
+        baseUrl,
+      });
+    }
+
+    return res.json({
+      success: true,
+      plan,
+      baseUrl,
+      usage: usageJson,
+      message: plan === 'free'
+        ? 'Connected to WalletWallet Free Tier (1,000 passes/month, colorPreset & standard fields).'
+        : 'Connected to WalletWallet Pro Tier ($39/mo, custom hex, strip artwork, live push).',
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // -----------------------------------------------------------------------------

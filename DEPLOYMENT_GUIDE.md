@@ -135,7 +135,7 @@ max_batch_timeout = 30
 
 [vars]
 PUBLIC_DOMAIN = "https://yourdomain.com"
-WALLETWALLET_API_URL = "https://api.walletwallet.dev/v1"
+WALLETWALLET_API_URL = "https://api.walletwallet.dev"
 ```
 
 ---

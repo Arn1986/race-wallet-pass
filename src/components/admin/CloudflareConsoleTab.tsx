@@ -19,7 +19,8 @@ export const CloudflareConsoleTab: React.FC = () => {
   // Settings State
   const [settings, setSettings] = useState({
     walletwalletApiKey: '',
-    walletwalletApiUrl: '',
+    walletwalletApiUrl: 'https://api.walletwallet.dev',
+    walletwalletPlan: 'free' as 'free' | 'pro',
     resendApiKey: '',
     emailFrom: '',
     publicDomain: '',
@@ -34,6 +35,10 @@ export const CloudflareConsoleTab: React.FC = () => {
   const [testEmailAddr, setTestEmailAddr] = useState('');
   const [testingEmail, setTestingEmail] = useState(false);
   const [testEmailResult, setTestEmailResult] = useState<any | null>(null);
+
+  // WalletWallet Status & Test State
+  const [testingWalletWallet, setTestingWalletWallet] = useState(false);
+  const [walletWalletResult, setWalletWalletResult] = useState<any | null>(null);
 
   useEffect(() => {
     fetchAssets();
@@ -153,6 +158,20 @@ export const CloudflareConsoleTab: React.FC = () => {
     }
   };
 
+  const handleTestWalletWallet = async () => {
+    try {
+      setTestingWalletWallet(true);
+      setWalletWalletResult(null);
+      const res = await fetch('/api/walletwallet/status');
+      const json = await res.json();
+      setWalletWalletResult(json);
+    } catch (err: any) {
+      setWalletWalletResult({ success: false, error: err.message });
+    } finally {
+      setTestingWalletWallet(false);
+    }
+  };
+
   const wranglerTomlContent = `name = "wallet-pass-platform"
 main = "./node_modules/astro/dist/cloudflare/entrypoints/server.js"
 compatibility_date = "2026-10-10"
@@ -180,7 +199,7 @@ max_batch_timeout = 30
 
 [vars]
 PUBLIC_DOMAIN = "https://walletpass.cloud"
-WALLETWALLET_API_URL = "https://api.walletwallet.dev/v1"`;
+WALLETWALLET_API_URL = "https://api.walletwallet.dev"`;
 
   return (
     <div className="space-y-6">
@@ -599,9 +618,14 @@ WALLETWALLET_API_URL = "https://api.walletwallet.dev/v1"`;
                   placeholder="Wallet Pass <onboarding@resend.dev> or Passes <tickets@yourdomain.com>"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
                 />
-                <p className="text-[11px] text-slate-500 mt-1">
-                  Leave empty or use <code className="text-sky-300">Wallet Pass &lt;onboarding@resend.dev&gt;</code> for free testing mode.
-                </p>
+                <div className="p-2.5 mt-2 rounded-xl bg-slate-950/80 border border-slate-800/80 text-[11px] text-slate-400 space-y-1">
+                  <p className="text-amber-300 font-semibold flex items-center gap-1">
+                    <Info className="w-3.5 h-3.5 text-amber-400" /> Resend Free Tier Recipient Rule:
+                  </p>
+                  <p>
+                    When using <code className="text-sky-300">onboarding@resend.dev</code>, Resend only delivers to your registered account email. To send passes to any attendee or tester email, verify your custom domain at <a href="https://resend.com/domains" target="_blank" rel="noreferrer" className="text-sky-400 underline">resend.com/domains</a>.
+                  </p>
+                </div>
               </div>
 
               <div>
@@ -620,32 +644,146 @@ WALLETWALLET_API_URL = "https://api.walletwallet.dev/v1"`;
                 </p>
               </div>
 
-              <div className="pt-3 border-t border-slate-800">
-                <label className="block uppercase font-bold text-slate-400 mb-1">
-                  WALLETWALLET_API_KEY
-                </label>
-                <input
-                  type="text"
-                  value={settings.walletwalletApiKey}
-                  onChange={(e) => setSettings({ ...settings, walletwalletApiKey: e.target.value })}
-                  placeholder="ww_live_sk_..."
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
-                />
-                <p className="text-[11px] text-slate-500 mt-1">
-                  Connects to walletwallet.dev for production APNs and FCM certificate signing and push dispatch.
-                </p>
-              </div>
+              {/* WalletWallet.dev Integration Section */}
+              <div className="pt-4 border-t border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block uppercase font-bold text-slate-300">
+                      WalletWallet.dev Integration & Plan Tier
+                    </label>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Unified Apple Wallet (.pkpass) and Google Wallet pass issuance per{' '}
+                      <a href="https://www.walletwallet.dev/docs" target="_blank" rel="noreferrer" className="text-sky-400 underline">walletwallet.dev/docs</a>.
+                    </p>
+                  </div>
+                  <a
+                    href="https://www.walletwallet.dev/docs"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[11px] text-sky-400 hover:text-sky-300 flex items-center gap-1 font-semibold"
+                  >
+                    <span>Official Docs</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
 
-              <div>
-                <label className="block uppercase font-bold text-slate-400 mb-1">
-                  WALLETWALLET_API_URL
-                </label>
-                <input
-                  type="text"
-                  value={settings.walletwalletApiUrl}
-                  onChange={(e) => setSettings({ ...settings, walletwalletApiUrl: e.target.value })}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
-                />
+                {/* Plan Tier Selection (Free vs Pro) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div
+                    onClick={() => setSettings({ ...settings, walletwalletPlan: 'free' })}
+                    className={`p-3.5 rounded-2xl border cursor-pointer transition-all ${
+                      settings.walletwalletPlan === 'free'
+                        ? 'bg-sky-950/40 border-sky-500 text-white shadow-md'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-bold text-xs flex items-center gap-1.5">
+                        <span className={`w-2 h-2 rounded-full ${settings.walletwalletPlan === 'free' ? 'bg-sky-400' : 'bg-slate-600'}`} />
+                        Free Tier (Non-Pro Feature)
+                      </span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 font-mono font-bold">
+                        1,000 passes/mo
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      Issues passes using standard <code className="text-sky-300">colorPreset</code> (dark, blue, green, red, purple, orange), QR codes, and all data fields without requiring a paid subscription or credit card.
+                    </p>
+                  </div>
+
+                  <div
+                    onClick={() => setSettings({ ...settings, walletwalletPlan: 'pro' })}
+                    className={`p-3.5 rounded-2xl border cursor-pointer transition-all ${
+                      settings.walletwalletPlan === 'pro'
+                        ? 'bg-sky-950/40 border-sky-500 text-white shadow-md'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-bold text-xs flex items-center gap-1.5">
+                        <span className={`w-2 h-2 rounded-full ${settings.walletwalletPlan === 'pro' ? 'bg-sky-400' : 'bg-slate-600'}`} />
+                        Pro Tier ($39/mo)
+                      </span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-950 text-purple-400 border border-purple-800 font-mono font-bold">
+                        100,000 passes/mo
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      Unlocks custom hex colors, hero strip images, lock screen geofences, and live APNs push notifications via <code className="text-purple-300">PUT /api/passes/:serial</code>.
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block uppercase font-bold text-slate-400 mb-1">
+                    WALLETWALLET_API_KEY
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={settings.walletwalletApiKey}
+                      onChange={(e) => setSettings({ ...settings, walletwalletApiKey: e.target.value })}
+                      placeholder="ww_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                      className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleTestWalletWallet}
+                      disabled={testingWalletWallet}
+                      className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 font-semibold text-xs border border-slate-700 transition-all cursor-pointer shrink-0 disabled:opacity-50"
+                    >
+                      {testingWalletWallet ? 'Testing...' : 'Verify Connection'}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Bearer token from your WalletWallet dashboard (<code className="text-sky-300">ww_live_...</code>).
+                  </p>
+                </div>
+
+                {walletWalletResult && (
+                  <div
+                    className={`p-3.5 rounded-2xl border text-xs space-y-1.5 ${
+                      walletWalletResult.success
+                        ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300'
+                        : 'bg-rose-950/40 border-rose-800/60 text-rose-300'
+                    }`}
+                  >
+                    <div className="font-bold flex items-center gap-1.5">
+                      {walletWalletResult.success ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      ) : (
+                        <AlertTriangle className="w-4 h-4 text-rose-400" />
+                      )}
+                      <span>{walletWalletResult.message || (walletWalletResult.success ? 'WalletWallet API Connected!' : 'Connection Failed')}</span>
+                    </div>
+                    {walletWalletResult.error && (
+                      <p className="text-[11px] text-rose-300/90 font-mono">
+                        {walletWalletResult.error}
+                      </p>
+                    )}
+                    {walletWalletResult.usage && (
+                      <div className="text-[11px] text-slate-300 font-mono bg-slate-950/60 p-2 rounded-xl">
+                        Monthly passes count: {JSON.stringify(walletWalletResult.usage)}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div>
+                  <label className="block uppercase font-bold text-slate-400 mb-1">
+                    WALLETWALLET_API_URL
+                  </label>
+                  <input
+                    type="text"
+                    value={settings.walletwalletApiUrl}
+                    onChange={(e) => setSettings({ ...settings, walletwalletApiUrl: e.target.value })}
+                    placeholder="https://api.walletwallet.dev"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
+                  />
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Official Base URL per docs is <code className="text-sky-300">https://api.walletwallet.dev</code>.
+                  </p>
+                </div>
               </div>
 
               <div className="pt-3 border-t border-slate-800 flex items-center justify-between">

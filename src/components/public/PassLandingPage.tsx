@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AppleWalletPassCard } from './AppleWalletPassCard.tsx';
 import { GoogleWalletPassCard } from './GoogleWalletPassCard.tsx';
 import { Runner, Race, PassTemplate, Pass } from '../../types/index.ts';
-import { Download, Share2, ArrowLeft, Check, BellRing, Sparkles, RefreshCw, AlertCircle, Smartphone } from 'lucide-react';
+import { Download, Share2, ArrowLeft, Check, BellRing, Sparkles, RefreshCw, AlertCircle, Smartphone, ExternalLink } from 'lucide-react';
 
 interface PassLandingPageProps {
   runnerId: string;
@@ -85,12 +85,16 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
     if (!data) return;
     try {
       await fetch(`/api/pass/mark-google/${runnerId}`, { method: 'POST' });
-      // Trigger notification feedback
-      setPushNotification({
-        title: 'Google Wallet',
-        message: `${data.race.name} pass added to your Google Wallet account.`,
-        time: 'Just now',
-      });
+      if (data.pass?.google_save_url) {
+        window.open(data.pass.google_save_url, '_blank');
+      } else {
+        // Trigger notification feedback
+        setPushNotification({
+          title: 'Google Wallet',
+          message: `${data.race.name} pass added to your Google Wallet account.`,
+          time: 'Just now',
+        });
+      }
       fetchPassDetails();
       setTimeout(() => setPushNotification(null), 5000);
     } catch (err) {
@@ -407,6 +411,19 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
             </div>
             <Sparkles className="w-4 h-4 text-sky-400 ml-auto" />
           </button>
+
+          {/* WalletWallet Hosted Device-Aware Share Link */}
+          {data.pass?.share_url && (
+            <a
+              href={data.pass.share_url}
+              target="_blank"
+              rel="noreferrer"
+              className="w-full py-2.5 px-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-800 text-sky-400 hover:text-sky-300 text-xs font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer text-center"
+            >
+              <span>Open Device-Aware Install Page (WalletWallet)</span>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+          )}
         </div>
 
         {/* Live APNs / Push Notification Test Console (For Organizers and Runners) */}

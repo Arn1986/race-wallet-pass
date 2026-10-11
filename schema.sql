@@ -57,6 +57,9 @@ CREATE TABLE IF NOT EXISTS Passes (
     id TEXT PRIMARY KEY, -- UUID v4
     runner_id TEXT NOT NULL UNIQUE,
     walletwallet_pass_id TEXT UNIQUE,
+    google_save_url TEXT,
+    share_url TEXT,
+    apple_pass_base64 TEXT,
     status TEXT CHECK(status IN ('pending', 'issued', 'revoked', 'failed')) DEFAULT 'pending',
     installed_apple BOOLEAN DEFAULT 0,
     installed_google BOOLEAN DEFAULT 0,

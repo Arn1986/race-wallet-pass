@@ -69,6 +69,9 @@ export interface Pass {
   id: string;
   runner_id: string;
   walletwallet_pass_id: string;
+  google_save_url?: string;
+  share_url?: string;
+  apple_pass_base64?: string;
   status: 'pending' | 'issued' | 'revoked' | 'failed';
   installed_apple: number; // 0 or 1
   installed_google: number; // 0 or 1
