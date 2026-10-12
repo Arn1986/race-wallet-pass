@@ -205,11 +205,13 @@ async function createWalletWalletPassServer(options: {
     }
   }
 
+  const cleanApiKey = apiKey.trim().replace(/^Bearer\s+/i, '');
+
   try {
     const res = await fetch(`${baseEndpoint}/api/passes`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${apiKey.trim()}`,
+        Authorization: `Bearer ${cleanApiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
@@ -227,7 +229,7 @@ async function createWalletWalletPassServer(options: {
         const retry = await fetch(`${baseEndpoint}/api/passes`, {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${apiKey.trim()}`,
+            Authorization: `Bearer ${cleanApiKey}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(fallbackBody),
@@ -569,7 +571,7 @@ app.post('/api/lookup', (req, res) => {
 // -----------------------------------------------------------------------------
 // 6. Pass Landing Page SSR/API Data
 // -----------------------------------------------------------------------------
-app.get('/api/pass/details/:id', (req, res) => {
+app.get('/api/pass/details/:id', async (req, res) => {
   try {
     const runnerId = req.params.id;
     const runner = d1Db.getRunnerById(runnerId);
@@ -577,9 +579,41 @@ app.get('/api/pass/details/:id', (req, res) => {
       return res.status(404).json({ success: false, error: 'Participant not found' });
     }
 
-    const pass = d1Db.getPassByRunnerId(runnerId);
+    let pass = d1Db.getPassByRunnerId(runnerId);
     const race = d1Db.getRaceById(runner.race_id);
     const template = race ? d1Db.getTemplateById(race.template_id) : undefined;
+
+    // Auto-provision with WalletWallet if key exists and pass lacks Google/Apple URLs
+    if (pass && (!pass.google_save_url || !pass.apple_pass_base64) && d1Db.settings.walletwalletApiKey) {
+      const wwRes = await createWalletWalletPassServer({
+        apiKey: d1Db.settings.walletwalletApiKey,
+        baseUrl: d1Db.settings.walletwalletApiUrl,
+        plan: d1Db.settings.walletwalletPlan,
+        raceName: race?.name || 'Athletic Event',
+        orgName: 'Pacific Athletic Series',
+        runner: {
+          id: runner.id,
+          first_name: runner.first_name,
+          last_name: runner.last_name,
+          email: runner.email,
+          dynamic_data: runner.dynamic_data,
+        },
+        template,
+      });
+
+      if (wwRes.success && wwRes.serialNumber) {
+        pass.walletwallet_pass_id = wwRes.serialNumber;
+        pass.google_save_url = wwRes.googleSaveUrl;
+        pass.share_url = wwRes.shareUrl;
+        pass.apple_pass_base64 = wwRes.applePass;
+        d1Db.updatePass(pass.id, {
+          walletwallet_pass_id: wwRes.serialNumber,
+          google_save_url: wwRes.googleSaveUrl,
+          share_url: wwRes.shareUrl,
+          apple_pass_base64: wwRes.applePass,
+        });
+      }
+    }
 
     return res.json({
       success: true,
@@ -589,6 +623,67 @@ app.get('/api/pass/details/:id', (req, res) => {
         race,
         template,
       },
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Explicit WalletWallet Pass Sync / Provision
+app.post('/api/pass/sync/:id', async (req, res) => {
+  try {
+    const runnerId = req.params.id;
+    const runner = d1Db.getRunnerById(runnerId);
+    if (!runner) return res.status(404).json({ success: false, error: 'Participant not found' });
+    const pass = d1Db.getPassByRunnerId(runnerId);
+    const race = d1Db.getRaceById(runner.race_id);
+    const template = race ? d1Db.getTemplateById(race.template_id) : undefined;
+
+    if (!d1Db.settings.walletwalletApiKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'WALLETWALLET_API_KEY is not configured yet. Add your key in Admin Settings to issue official Google & Apple passes.',
+      });
+    }
+
+    const wwRes = await createWalletWalletPassServer({
+      apiKey: d1Db.settings.walletwalletApiKey,
+      baseUrl: d1Db.settings.walletwalletApiUrl,
+      plan: d1Db.settings.walletwalletPlan,
+      raceName: race?.name || 'Athletic Event',
+      orgName: 'Pacific Athletic Series',
+      runner: {
+        id: runner.id,
+        first_name: runner.first_name,
+        last_name: runner.last_name,
+        email: runner.email,
+        dynamic_data: runner.dynamic_data,
+      },
+      template,
+    });
+
+    if (!wwRes.success) {
+      return res.status(502).json({ success: false, error: wwRes.error || 'Failed to issue pass via WalletWallet API' });
+    }
+
+    if (pass && wwRes.serialNumber) {
+      pass.walletwallet_pass_id = wwRes.serialNumber;
+      pass.google_save_url = wwRes.googleSaveUrl;
+      pass.share_url = wwRes.shareUrl;
+      pass.apple_pass_base64 = wwRes.applePass;
+      d1Db.updatePass(pass.id, {
+        walletwallet_pass_id: wwRes.serialNumber,
+        google_save_url: wwRes.googleSaveUrl,
+        share_url: wwRes.shareUrl,
+        apple_pass_base64: wwRes.applePass,
+      });
+    }
+
+    return res.json({
+      success: true,
+      pass,
+      googleSaveUrl: wwRes.googleSaveUrl,
+      shareUrl: wwRes.shareUrl,
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });

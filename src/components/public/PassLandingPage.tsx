@@ -28,6 +28,8 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
   const [isFlipped, setIsFlipped] = useState(false);
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [syncingPass, setSyncingPass] = useState(false);
+  const [walletNotice, setWalletNotice] = useState<string | null>(null);
 
   // Live Push Notification Simulation
   const [pushNotification, setPushNotification] = useState<{
@@ -62,6 +64,17 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
     if (!data) return;
     try {
       setDownloading(true);
+      // If pass has not been provisioned with WalletWallet yet, attempt a live sync
+      if (!data.pass?.apple_pass_base64) {
+        try {
+          const syncRes = await fetch(`/api/pass/sync/${runnerId}`, { method: 'POST' });
+          const syncJson = await syncRes.json();
+          if (syncJson.success) {
+            await fetchPassDetails();
+          }
+        } catch {}
+      }
+
       // Direct stream download of .pkpass
       const downloadUrl = `/api/pass/download/${runnerId}`;
       const link = document.createElement('a');
@@ -87,18 +100,24 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
       await fetch(`/api/pass/mark-google/${runnerId}`, { method: 'POST' });
       if (data.pass?.google_save_url) {
         window.open(data.pass.google_save_url, '_blank');
-      } else {
-        // Trigger notification feedback
-        setPushNotification({
-          title: 'Google Wallet',
-          message: `${data.race.name} pass added to your Google Wallet account.`,
-          time: 'Just now',
-        });
+        return;
       }
-      fetchPassDetails();
-      setTimeout(() => setPushNotification(null), 5000);
-    } catch (err) {
-      // ignore
+
+      // If google_save_url was not generated yet, perform live sync with WalletWallet
+      setSyncingPass(true);
+      const syncRes = await fetch(`/api/pass/sync/${runnerId}`, { method: 'POST' });
+      const syncJson = await syncRes.json();
+      if (syncJson.success && syncJson.googleSaveUrl) {
+        await fetchPassDetails();
+        window.open(syncJson.googleSaveUrl, '_blank');
+      } else {
+        const errorMsg = syncJson.error || 'WALLETWALLET_API_KEY is not configured yet.';
+        setWalletNotice(errorMsg);
+      }
+    } catch (err: any) {
+      setWalletNotice(err.message || 'Error connecting to Wallet API');
+    } finally {
+      setSyncingPass(false);
     }
   };
 
@@ -394,7 +413,7 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
           {/* Google Wallet Official Button */}
           <button
             onClick={handleAddGoogleWallet}
-            disabled={isRevoked}
+            disabled={isRevoked || syncingPass}
             className={`w-full py-3.5 px-4 rounded-2xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
               isRevoked ? 'opacity-50 cursor-not-allowed' : ''
             }`}
@@ -406,11 +425,46 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
               <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
             </svg>
             <div className="text-left">
-              <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">Save to</p>
+              <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
+                {syncingPass ? 'Generating Google Pass...' : 'Save to'}
+              </p>
               <p className="text-sm font-bold text-white leading-tight">Google Wallet</p>
             </div>
             <Sparkles className="w-4 h-4 text-sky-400 ml-auto" />
           </button>
+
+          {/* Wallet Notice Card */}
+          {walletNotice && (
+            <div className="p-3.5 rounded-2xl bg-amber-950/40 border border-amber-800/60 text-xs text-amber-200 space-y-1.5 text-left">
+              <div className="font-bold flex items-center justify-between text-amber-300">
+                <span className="flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 text-amber-400" /> Wallet API Key Notice
+                </span>
+                <button
+                  onClick={() => setWalletNotice(null)}
+                  className="text-slate-400 hover:text-white cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+              <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                {walletNotice}
+              </p>
+              <p className="text-[10.5px] text-slate-400">
+                To issue real signed Apple & Google passes, obtain a free API key at <a href="https://www.walletwallet.dev" target="_blank" rel="noreferrer" className="text-sky-400 underline">walletwallet.dev</a> (up to 1,000 passes/mo) and add it under Admin Settings or wrangler.toml.
+              </p>
+              {onNavigateHome && (
+                <div className="pt-1">
+                  <button
+                    onClick={onNavigateHome}
+                    className="text-[11px] font-bold text-sky-400 hover:text-sky-300 underline cursor-pointer"
+                  >
+                    Go to Admin Console & Settings →
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* WalletWallet Hosted Device-Aware Share Link */}
           {data.pass?.share_url && (

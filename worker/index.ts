@@ -157,11 +157,13 @@ async function createWalletWalletPass(options: {
     }
   }
 
+  const cleanApiKey = apiKey.trim().replace(/^Bearer\s+/i, '');
+
   try {
     const res = await fetch(`${baseEndpoint}/api/passes`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${apiKey.trim()}`,
+        Authorization: `Bearer ${cleanApiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
@@ -180,7 +182,7 @@ async function createWalletWalletPass(options: {
         const retry = await fetch(`${baseEndpoint}/api/passes`, {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${apiKey.trim()}`,
+            Authorization: `Bearer ${cleanApiKey}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(fallbackBody),
@@ -1294,13 +1296,93 @@ export default {
         const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runnerId).first<any>();
         if (!runner) return Response.json({ success: false, error: 'Runner not found' }, { status: 404, headers: corsHeaders });
 
-        const pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
+        let pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
         const race = await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>();
         const template = race ? await env.DB.prepare('SELECT * FROM Templates WHERE id = ?').bind(race.template_id).first<any>() : null;
+
+        // Auto-provision or upgrade to official WalletWallet pass if key is configured and pass lacks Google/Apple URLs
+        if (pass && (!pass.google_save_url || !pass.apple_pass_base64)) {
+          const walletwalletApiKey = env.WALLETWALLET_API_KEY || (await getSystemSetting(env, 'walletwalletApiKey')) || '';
+          if (walletwalletApiKey) {
+            const rawUrl = env.WALLETWALLET_API_URL || (await getSystemSetting(env, 'walletwalletApiUrl')) || 'https://api.walletwallet.dev';
+            const plan = ((await getSystemSetting(env, 'walletwalletPlan')) || env.WALLETWALLET_PLAN || 'free') as 'free' | 'pro';
+            const wwRes = await createWalletWalletPass({
+              apiKey: walletwalletApiKey,
+              baseUrl: rawUrl,
+              plan,
+              raceName: race?.name || 'Athletic Event',
+              orgName: race?.org_name || 'Pacific Athletic Series',
+              runner,
+              template: template || undefined,
+            });
+
+            if (wwRes.success && wwRes.serialNumber) {
+              await env.DB.prepare(`
+                UPDATE Passes 
+                SET walletwallet_pass_id = ?, google_save_url = ?, share_url = ?, apple_pass_base64 = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE runner_id = ?
+              `).bind(wwRes.serialNumber, wwRes.googleSaveUrl || null, wwRes.shareUrl || null, wwRes.applePass || null, runnerId).run();
+              pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
+            }
+          }
+        }
 
         return Response.json({
           success: true,
           data: { runner, pass, race, template },
+        }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // =========================================================================
+    // EXPLICIT PASS SYNC / PROVISION (POST /api/pass/sync/:id)
+    // =========================================================================
+    if (pathname.startsWith('/api/pass/sync/') && request.method === 'POST') {
+      const runnerId = pathname.replace('/api/pass/sync/', '');
+      try {
+        const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runnerId).first<any>();
+        if (!runner) return Response.json({ success: false, error: 'Runner not found' }, { status: 404, headers: corsHeaders });
+        const race = await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>();
+        const template = race ? await env.DB.prepare('SELECT * FROM Templates WHERE id = ?').bind(race.template_id).first<any>() : null;
+
+        const walletwalletApiKey = env.WALLETWALLET_API_KEY || (await getSystemSetting(env, 'walletwalletApiKey')) || '';
+        if (!walletwalletApiKey) {
+          return Response.json({
+            success: false,
+            error: 'WALLETWALLET_API_KEY is not configured yet. Add your key in Admin Settings or wrangler.toml to issue official Google & Apple passes.',
+          }, { status: 400, headers: corsHeaders });
+        }
+
+        const rawUrl = env.WALLETWALLET_API_URL || (await getSystemSetting(env, 'walletwalletApiUrl')) || 'https://api.walletwallet.dev';
+        const plan = ((await getSystemSetting(env, 'walletwalletPlan')) || env.WALLETWALLET_PLAN || 'free') as 'free' | 'pro';
+        const wwRes = await createWalletWalletPass({
+          apiKey: walletwalletApiKey,
+          baseUrl: rawUrl,
+          plan,
+          raceName: race?.name || 'Athletic Event',
+          orgName: race?.org_name || 'Pacific Athletic Series',
+          runner,
+          template: template || undefined,
+        });
+
+        if (!wwRes.success) {
+          return Response.json({ success: false, error: wwRes.error || 'Failed to issue pass via WalletWallet API' }, { status: 502, headers: corsHeaders });
+        }
+
+        await env.DB.prepare(`
+          UPDATE Passes 
+          SET walletwallet_pass_id = ?, google_save_url = ?, share_url = ?, apple_pass_base64 = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE runner_id = ?
+        `).bind(wwRes.serialNumber, wwRes.googleSaveUrl || null, wwRes.shareUrl || null, wwRes.applePass || null, runnerId).run();
+
+        const updatedPass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
+        return Response.json({
+          success: true,
+          pass: updatedPass,
+          googleSaveUrl: wwRes.googleSaveUrl,
+          shareUrl: wwRes.shareUrl,
         }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
@@ -1511,9 +1593,93 @@ export default {
       }
     }
 
-    // Fallback: Serve Frontend Static Assets (via Cloudflare Workers Assets)
+    // =========================================================================
+    // FRONTEND STATIC ASSETS & SPA ROUTING (Cloudflare Workers Assets)
+    // =========================================================================
     if (env.ASSETS) {
-      return await env.ASSETS.fetch(request);
+      let assetResponse = await env.ASSETS.fetch(request);
+      // SPA Fallback: If asset was not found and request is not an /api/ endpoint or static asset file (.js, .css, .ico, etc.)
+      if (assetResponse.status === 404 && !pathname.startsWith('/api/') && !pathname.includes('.')) {
+        const indexUrl = new URL('/index.html', request.url);
+        const indexRequest = new Request(indexUrl.toString(), request);
+        const spaResponse = await env.ASSETS.fetch(indexRequest);
+        if (spaResponse.status < 400) {
+          return spaResponse;
+        }
+      } else if (assetResponse.status !== 404) {
+        return assetResponse;
+      }
+    }
+
+    // Resilience Edge Fallback for /pass/:id (renders full standalone HTML if assets bundle is missing)
+    if (pathname.startsWith('/pass/')) {
+      const runnerId = pathname.replace('/pass/', '').split('?')[0].split('#')[0];
+      try {
+        const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runnerId).first<any>();
+        if (runner) {
+          const pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
+          const race = await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>();
+          let dyn: Record<string, any> = {};
+          try { dyn = JSON.parse(runner.dynamic_data || '{}'); } catch {}
+          const bib = dyn.bib_number || dyn.bib || runner.id.replace('run-', '').slice(0, 8).toUpperCase();
+          const wave = dyn.start_wave || dyn.wave || 'Open Wave';
+          const division = dyn.race_division || dyn.category || 'Standard';
+
+          const googleButton = pass?.google_save_url
+            ? `<a href="${pass.google_save_url}" target="_blank" style="display: block; width: 100%; padding: 14px 16px; background-color: #1e293b; border: 1px solid #475569; color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 14px; text-decoration: none; text-align: center; margin-bottom: 12px; box-sizing: border-box;">
+                Save to Google Wallet ↗
+               </a>`
+            : '';
+
+          const shareLink = pass?.share_url
+            ? `<p style="text-align: center; margin: 12px 0 0; font-size: 12px;">
+                <a href="${pass.share_url}" target="_blank" style="color: #38bdf8; text-decoration: underline;">
+                  Open Device-Aware Pass Installation Page (WalletWallet) ↗
+                </a>
+               </p>`
+            : '';
+
+          const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${race?.name || 'Athletic Event'} - Digital Pass</title>
+  <style>
+    body { margin: 0; background-color: #020617; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px 16px; box-sizing: border-box; }
+    .card { width: 100%; max-width: 380px; background: linear-gradient(145deg, #0f172a, #1e293b); border-radius: 24px; padding: 24px; border: 1px solid #334155; box-shadow: 0 20px 40px rgba(0,0,0,0.6); }
+    .btn-apple { display: block; width: 100%; padding: 14px 16px; background-color: #000000; border: 1px solid #334155; color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 14px; text-decoration: none; text-align: center; margin-bottom: 12px; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #94a3b8; font-weight: 700;">${race?.name || 'Official Athletic Pass'}</div>
+    <div style="font-size: 24px; font-weight: 800; margin: 6px 0 16px; color: #ffffff;">${runner.first_name} ${runner.last_name}</div>
+    <div style="background: rgba(15,23,42,0.8); border: 1px solid #334155; border-radius: 16px; padding: 16px; margin-bottom: 20px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <span style="font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700;">Bib Number</span>
+        <span style="font-size: 20px; font-weight: 800; font-family: monospace; color: #38bdf8;">#${bib}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700;">Division</span>
+        <span style="font-size: 13px; font-weight: 600; color: #e2e8f0;">${division}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700;">Start Wave</span>
+        <span style="font-size: 13px; font-weight: 600; color: #e2e8f0;">${wave}</span>
+      </div>
+    </div>
+    <a href="/api/pass/download/${runnerId}" class="btn-apple">
+      Add to Apple Wallet (.pkpass) ↓
+    </a>
+    ${googleButton}
+    ${shareLink}
+  </div>
+</body>
+</html>`;
+          return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        }
+      } catch (err) {}
     }
 
     return new Response('Cloudflare Worker Pass API Gateway Active.', { status: 200 });
