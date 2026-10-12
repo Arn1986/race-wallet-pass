@@ -1029,7 +1029,8 @@ export default {
     // DYNAMIC PASS PROXY (Streams .pkpass)
     // =========================================================================
     if (pathname.startsWith('/api/pass/download/')) {
-      const runnerId = pathname.replace('/api/pass/download/', '');
+      const rawId = pathname.replace('/api/pass/download/', '');
+      const runnerId = rawId.replace(/\/(apple|pass)?(\.pkpass)?$/i, '').replace(/\.pkpass$/i, '');
       try {
         const passRecord = await env.DB.prepare(
           'SELECT * FROM Passes WHERE runner_id = ?'
@@ -1110,8 +1111,8 @@ export default {
           return new Response(bytes, {
             headers: {
               'Content-Type': 'application/vnd.apple.pkpass',
-              'Content-Disposition': `inline; filename="pass_${bibNumber}.pkpass"`,
-              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              'Content-Disposition': 'attachment; filename="pass.pkpass"',
+              'Cache-Control': 'no-store, no-cache, must-revalidate',
               ...corsHeaders,
             },
           });
@@ -1128,8 +1129,8 @@ export default {
         return new Response(new Uint8Array(buffer), {
           headers: {
             'Content-Type': 'application/vnd.apple.pkpass',
-            'Content-Disposition': `inline; filename="pass_${bibNumber}.pkpass"`,
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Content-Disposition': 'attachment; filename="pass.pkpass"',
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
             ...corsHeaders,
           },
         });
@@ -1678,7 +1679,7 @@ export default {
           const isAndroid = /Android/i.test(ua);
 
           let actionButtonsHtml = '';
-          const appleButton = `<a href="/api/pass/download/${runnerId}" class="btn-apple">
+          const appleButton = `<a href="/api/pass/download/${runnerId}/pass.pkpass" class="btn-apple">
             <svg viewBox="0 0 170 170" width="18" height="18" fill="currentColor" style="display: inline-block; vertical-align: middle; margin-right: 8px;"><path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.74 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.69-3.04-7.66-7.86-11.91-14.46-5.74-9.01-10.23-19.34-13.48-30.98-3.26-11.64-4.89-22.95-4.89-33.93 0-16.14 4.35-29.49 13.04-40.06 8.69-10.58 19.53-15.98 32.51-16.23 4.93 0 10.42 1.34 16.47 4.02 6.05 2.68 9.97 4.09 11.75 4.22 1.57-.13 5.74-1.61 12.51-4.43 6.77-2.82 12.44-4.08 17.02-3.79 12.73.65 23.01 5.34 30.82 14.07-11.22 6.74-16.71 16.4-16.47 28.98.24 9.94 4.09 18.23 11.55 24.87 7.46 6.64 16.46 10.32 27.01 11.03-2.24 6.84-4.99 14.08-8.26 21.72zM119.22 31.84c0-7.39 2.65-14.28 7.95-20.67 5.3-6.39 11.95-10.45 19.95-12.17.65 1.52.98 3.14.98 4.86 0 7.39-2.73 14.41-8.19 21.06-5.46 6.65-12.16 10.6-20.09 11.85-.43-1.63-.6-3.27-.6-4.93z"/></svg>
             Add to Apple Wallet
           </a>`;
@@ -1700,7 +1701,7 @@ export default {
             actionButtonsHtml = `
               <div style="font-size: 11px; color: #34d399; margin-bottom: 8px; text-align: center; font-weight: 600;">🤖 Android Device Detected</div>
               ${googleButton || appleButton}
-              ${googleButton ? `<div style="text-align: center; margin-top: 6px;"><a href="/api/pass/download/${runnerId}" style="color: #94a3b8; font-size: 12px; text-decoration: underline;">Download Apple Wallet (.pkpass) instead →</a></div>` : ''}
+              ${googleButton ? `<div style="text-align: center; margin-top: 6px;"><a href="/api/pass/download/${runnerId}/pass.pkpass" style="color: #94a3b8; font-size: 12px; text-decoration: underline;">Download Apple Wallet (.pkpass) instead →</a></div>` : ''}
             `;
           } else {
             // Desktop: Show both buttons + Scan with phone QR code

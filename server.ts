@@ -16,9 +16,10 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // -----------------------------------------------------------------------------
 // 1. Core Workflow A: Dynamic Pass Proxy Endpoint
 // -----------------------------------------------------------------------------
-app.get('/api/pass/download/:id', async (req, res) => {
+app.get(['/api/pass/download/:id', '/api/pass/download/:id/pass.pkpass', '/api/pass/download/:id/apple.pkpass'], async (req, res) => {
   try {
-    const runnerId = req.params.id;
+    const rawId = req.params.id || '';
+    const runnerId = rawId.replace(/\/(apple|pass)?(\.pkpass)?$/i, '').replace(/\.pkpass$/i, '');
     const runner = d1Db.getRunnerById(runnerId);
     if (!runner) {
       return res.status(404).json({ success: false, error: 'Participant not found' });
@@ -58,9 +59,9 @@ app.get('/api/pass/download/:id', async (req, res) => {
     if (pass.apple_pass_base64) {
       const buffer = Buffer.from(pass.apple_pass_base64, 'base64');
       res.setHeader('Content-Type', 'application/vnd.apple.pkpass');
-      res.setHeader('Content-Disposition', `inline; filename="pass_${bibNumber}.pkpass"`);
+      res.setHeader('Content-Disposition', 'attachment; filename="pass.pkpass"');
       res.setHeader('Content-Length', buffer.length);
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       return res.end(buffer);
     }
 
@@ -74,9 +75,9 @@ app.get('/api/pass/download/:id', async (req, res) => {
     });
 
     res.setHeader('Content-Type', 'application/vnd.apple.pkpass');
-    res.setHeader('Content-Disposition', `inline; filename="pass_${bibNumber}.pkpass"`);
+    res.setHeader('Content-Disposition', 'attachment; filename="pass.pkpass"');
     res.setHeader('Content-Length', buffer.length);
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
     return res.end(buffer);
   } catch (error: any) {

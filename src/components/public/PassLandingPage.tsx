@@ -33,10 +33,14 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
   const [walletNotice, setWalletNotice] = useState<string | null>(null);
 
   // Device-aware detection on mount
+  const [isInAppBrowser, setIsInAppBrowser] = useState(false);
+
   useEffect(() => {
     const ua = navigator.userAgent || '';
     const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     const isAndroid = /Android/i.test(ua);
+    const inApp = isIOS && /GSA|Gmail|FBAN|FBAV|Instagram|Line|Twitter|MicroMessenger|musical_ly|BytedanceWebview/i.test(ua);
+    setIsInAppBrowser(inApp);
 
     if (isIOS) {
       setDetectedPlatform('ios');
@@ -85,7 +89,7 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
 
     // Direct top-level navigation: On iOS Safari, the browser hands application/vnd.apple.pkpass to PassKit
     // to pop up the native Apple Wallet "Add Pass" modal sheet.
-    window.location.href = `/api/pass/download/${runnerId}`;
+    window.location.href = `/api/pass/download/${runnerId}/pass.pkpass`;
 
     setTimeout(() => {
       fetchPassDetails();
@@ -409,9 +413,16 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
 
           {/* Smart Device-Aware Banner */}
           {detectedPlatform === 'ios' && (
-            <div className="flex items-center justify-center space-x-2 py-2 px-3.5 rounded-xl bg-slate-900 border border-sky-500/30 text-sky-300 text-xs font-semibold text-center">
-              <Smartphone className="w-4 h-4 text-sky-400 flex-shrink-0" />
-              <span>Apple iPhone detected — Add directly to Apple Wallet below</span>
+            <div className="space-y-2">
+              <div className="flex items-center justify-center space-x-2 py-2 px-3.5 rounded-xl bg-slate-900 border border-sky-500/30 text-sky-300 text-xs font-semibold text-center">
+                <Smartphone className="w-4 h-4 text-sky-400 flex-shrink-0" />
+                <span>Apple iPhone detected — Add directly to Apple Wallet below</span>
+              </div>
+              {isInAppBrowser && (
+                <div className="p-3 rounded-xl bg-amber-950/60 border border-amber-500/40 text-amber-200 text-xs text-left leading-relaxed">
+                  <span className="font-bold text-amber-300">💡 In-App Browser Notice:</span> You are viewing this page inside Gmail or an in-app browser. Tap the <strong>⋯</strong> or <strong>Share</strong> icon and choose <strong className="text-white underline">Open in Safari</strong> to open the native Apple Wallet prompt directly.
+                </div>
+              )}
             </div>
           )}
 
@@ -427,7 +438,7 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
             <>
               {/* Apple Wallet Primary Link (opens native PassKit modal on iOS Safari) */}
               <a
-                href={`/api/pass/download/${runnerId}`}
+                href={`/api/pass/download/${runnerId}/pass.pkpass`}
                 onClick={(e) => {
                   if (isRevoked) {
                     e.preventDefault();
@@ -491,7 +502,7 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
 
               {/* Apple Wallet Secondary Option */}
               <a
-                href={`/api/pass/download/${runnerId}`}
+                href={`/api/pass/download/${runnerId}/pass.pkpass`}
                 className="w-full py-2.5 px-3 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white text-xs font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer"
               >
                 <span>Download Apple Wallet (.pkpass) instead →</span>
@@ -502,7 +513,7 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
             <>
               {/* Apple Wallet Button */}
               <a
-                href={`/api/pass/download/${runnerId}`}
+                href={`/api/pass/download/${runnerId}/pass.pkpass`}
                 onClick={(e) => {
                   if (isRevoked) {
                     e.preventDefault();
