@@ -471,6 +471,7 @@ async function ensureD1Bootstrap(env: Env): Promise<string> {
   try { await env.DB.prepare('ALTER TABLE Passes ADD COLUMN google_save_url TEXT').run(); } catch {}
   try { await env.DB.prepare('ALTER TABLE Passes ADD COLUMN share_url TEXT').run(); } catch {}
   try { await env.DB.prepare('ALTER TABLE Passes ADD COLUMN apple_pass_base64 TEXT').run(); } catch {}
+  try { await env.DB.prepare('ALTER TABLE Passes ADD COLUMN r2_key TEXT').run(); } catch {}
 
   // 6. Guarantee that an organization exists in the Organizations table
   let activeOrgId = DEFAULT_ORG_ID;
@@ -1026,10 +1027,14 @@ export default {
     }
 
     // =========================================================================
-    // DYNAMIC PASS PROXY (Streams .pkpass)
+    // DYNAMIC PASS PROXY (Streams .pkpass from Cloudflare R2 / WalletWallet)
     // =========================================================================
-    if (pathname.startsWith('/api/pass/download/')) {
-      const rawId = pathname.replace('/api/pass/download/', '');
+    if (pathname.startsWith('/api/pass/download/') || pathname.startsWith('/api/r2/pass/') || pathname.startsWith('/passes/')) {
+      let rawId = pathname;
+      if (rawId.startsWith('/api/pass/download/')) rawId = rawId.replace('/api/pass/download/', '');
+      else if (rawId.startsWith('/api/r2/pass/')) rawId = rawId.replace('/api/r2/pass/', '');
+      else if (rawId.startsWith('/passes/')) rawId = rawId.replace('/passes/', '');
+
       const runnerId = rawId.replace(/\/(apple|pass)?(\.pkpass)?$/i, '').replace(/\.pkpass$/i, '');
       try {
         const passRecord = await env.DB.prepare(
@@ -1044,14 +1049,6 @@ export default {
           return Response.json({ success: false, error: 'This pass has been revoked' }, { status: 410, headers: corsHeaders });
         }
 
-        const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runnerId).first<any>();
-        const race = runner ? await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>() : null;
-        const template = race ? await env.DB.prepare('SELECT * FROM Templates WHERE id = ?').bind(race.template_id).first<any>() : null;
-
-        if (!runner || !race || !template) {
-          return Response.json({ success: false, error: 'Participant or race record not found' }, { status: 404, headers: corsHeaders });
-        }
-
         // Update installed_apple flag in D1
         ctx.waitUntil(
           env.DB.prepare('UPDATE Passes SET installed_apple = 1, updated_at = CURRENT_TIMESTAMP WHERE runner_id = ?')
@@ -1059,11 +1056,37 @@ export default {
             .run()
         );
 
-        let bibNumber = 'pass';
-        try {
-          const dyn = JSON.parse(runner.dynamic_data || '{}');
-          bibNumber = dyn.bib_number || dyn.bib || 'pass';
-        } catch {}
+        const r2Key = `passes/${runnerId}/pass.pkpass`;
+        const r2KeyAlt = `passes/${runnerId}.pkpass`;
+
+        // 1. Direct Delivery from Cloudflare R2 Bucket
+        if (env.ASSETS_BUCKET) {
+          try {
+            const r2Obj = (await env.ASSETS_BUCKET.get(r2Key)) || (await env.ASSETS_BUCKET.get(r2KeyAlt));
+            if (r2Obj) {
+              const headers = new Headers();
+              r2Obj.writeHttpMetadata(headers);
+              headers.set('Content-Type', 'application/vnd.apple.pkpass');
+              headers.set('Content-Disposition', 'attachment; filename="pass.pkpass"');
+              headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+              if (r2Obj.httpEtag) headers.set('etag', r2Obj.httpEtag);
+              for (const [k, v] of Object.entries(corsHeaders)) {
+                headers.set(k, v);
+              }
+              return new Response(r2Obj.body, { headers });
+            }
+          } catch (r2Err) {
+            console.warn('R2 read error:', r2Err);
+          }
+        }
+
+        const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runnerId).first<any>();
+        const race = runner ? await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>() : null;
+        const template = race ? await env.DB.prepare('SELECT * FROM Templates WHERE id = ?').bind(race.template_id).first<any>() : null;
+
+        if (!runner || !race || !template) {
+          return Response.json({ success: false, error: 'Participant or race record not found' }, { status: 404, headers: corsHeaders });
+        }
 
         // If Apple pass binary is not yet generated, attempt on-the-fly provision via WalletWallet
         if (!passRecord.apple_pass_base64) {
@@ -1101,36 +1124,58 @@ export default {
           }
         }
 
+        let passBytes: Uint8Array | null = null;
+
         // If signed .pkpass binary was returned from WalletWallet API
         if (passRecord.apple_pass_base64) {
           const binaryString = atob(passRecord.apple_pass_base64);
-          const bytes = new Uint8Array(binaryString.length);
+          passBytes = new Uint8Array(binaryString.length);
           for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
+            passBytes[i] = binaryString.charCodeAt(i);
           }
-          return new Response(bytes, {
-            headers: {
-              'Content-Type': 'application/vnd.apple.pkpass',
-              'Content-Disposition': 'attachment; filename="pass.pkpass"',
-              'Cache-Control': 'no-store, no-cache, must-revalidate',
-              ...corsHeaders,
-            },
+        } else {
+          // Fallback: Generate local .pkpass bundle at edge
+          const buffer = await generatePkpassBundle({
+            runner,
+            race,
+            template,
+            pass: passRecord as any,
           });
+          passBytes = new Uint8Array(buffer);
         }
 
-        // Fallback: Generate local .pkpass bundle at edge
-        const buffer = await generatePkpassBundle({
-          runner,
-          race,
-          template,
-          pass: passRecord as any,
-        });
+        // Save into Cloudflare R2 bucket for permanent edge delivery
+        if (env.ASSETS_BUCKET && passBytes) {
+          try {
+            await env.ASSETS_BUCKET.put(r2Key, passBytes, {
+              httpMetadata: {
+                contentType: 'application/vnd.apple.pkpass',
+                contentDisposition: 'attachment; filename="pass.pkpass"',
+                cacheControl: 'public, max-age=31536000, immutable',
+              },
+            });
+            await env.ASSETS_BUCKET.put(r2KeyAlt, passBytes, {
+              httpMetadata: {
+                contentType: 'application/vnd.apple.pkpass',
+                contentDisposition: 'attachment; filename="pass.pkpass"',
+                cacheControl: 'public, max-age=31536000, immutable',
+              },
+            });
+            ctx.waitUntil(
+              env.DB.prepare('UPDATE Passes SET r2_key = ?, updated_at = CURRENT_TIMESTAMP WHERE runner_id = ?')
+                .bind(r2Key, runnerId)
+                .run()
+            );
+          } catch (r2SaveErr) {
+            console.warn('Failed saving pass to R2:', r2SaveErr);
+          }
+        }
 
-        return new Response(new Uint8Array(buffer), {
+        return new Response(passBytes as any, {
           headers: {
             'Content-Type': 'application/vnd.apple.pkpass',
             'Content-Disposition': 'attachment; filename="pass.pkpass"',
-            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'Cache-Control': 'public, max-age=31536000, immutable',
             ...corsHeaders,
           },
         });
@@ -1405,6 +1450,34 @@ export default {
           SET walletwallet_pass_id = ?, google_save_url = ?, share_url = ?, apple_pass_base64 = ?, updated_at = CURRENT_TIMESTAMP
           WHERE runner_id = ?
         `).bind(wwRes.serialNumber, wwRes.googleSaveUrl || null, wwRes.shareUrl || null, wwRes.applePass || null, runnerId).run();
+
+        // Save signed pass to R2 for edge delivery
+        if (wwRes.applePass && env.ASSETS_BUCKET) {
+          try {
+            const binaryString = atob(wwRes.applePass);
+            const passBytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              passBytes[i] = binaryString.charCodeAt(i);
+            }
+            const r2Key = `passes/${runnerId}/pass.pkpass`;
+            await env.ASSETS_BUCKET.put(r2Key, passBytes, {
+              httpMetadata: {
+                contentType: 'application/vnd.apple.pkpass',
+                contentDisposition: 'attachment; filename="pass.pkpass"',
+                cacheControl: 'public, max-age=31536000, immutable',
+              },
+            });
+            await env.ASSETS_BUCKET.put(`passes/${runnerId}.pkpass`, passBytes, {
+              httpMetadata: {
+                contentType: 'application/vnd.apple.pkpass',
+                contentDisposition: 'attachment; filename="pass.pkpass"',
+                cacheControl: 'public, max-age=31536000, immutable',
+              },
+            });
+          } catch (r2Err) {
+            console.warn('R2 sync save error:', r2Err);
+          }
+        }
 
         const updatedPass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
         return Response.json({

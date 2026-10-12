@@ -439,17 +439,6 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
               {/* Apple Wallet Primary Link (opens native PassKit modal on iOS Safari) */}
               <a
                 href={`/api/pass/download/${runnerId}/pass.pkpass`}
-                onClick={(e) => {
-                  if (isRevoked) {
-                    e.preventDefault();
-                    return;
-                  }
-                  setDownloading(true);
-                  setTimeout(() => {
-                    fetchPassDetails();
-                    setDownloading(false);
-                  }, 2500);
-                }}
                 className={`w-full py-4 px-4 rounded-2xl bg-black hover:bg-neutral-900 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
                   isRevoked ? 'opacity-50 pointer-events-none' : ''
                 }`}
@@ -459,12 +448,27 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
                 </svg>
                 <div className="text-left">
                   <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
-                    {downloading ? 'Opening Wallet...' : 'Add to'}
+                    Add to
                   </p>
                   <p className="text-sm font-bold text-white leading-tight">Apple Wallet</p>
                 </div>
                 <span className="text-xs text-sky-400 font-semibold ml-auto">Add ↗</span>
               </a>
+
+              {/* Direct R2 Download Fallback */}
+              <div className="flex items-center justify-between px-1 text-xs">
+                <a
+                  href={`/api/pass/download/${runnerId}/pass.pkpass`}
+                  download="pass.pkpass"
+                  className="text-slate-400 hover:text-white underline text-[11px]"
+                >
+                  Direct R2 .pkpass download
+                </a>
+                <span className="text-emerald-400 font-mono text-[11px] flex items-center space-x-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  <span>Delivered via Cloudflare R2</span>
+                </span>
+              </div>
 
               {/* Google Wallet Secondary Option */}
               <button
@@ -514,17 +518,6 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
               {/* Apple Wallet Button */}
               <a
                 href={`/api/pass/download/${runnerId}/pass.pkpass`}
-                onClick={(e) => {
-                  if (isRevoked) {
-                    e.preventDefault();
-                    return;
-                  }
-                  setDownloading(true);
-                  setTimeout(() => {
-                    fetchPassDetails();
-                    setDownloading(false);
-                  }, 2000);
-                }}
                 className={`w-full py-3.5 px-4 rounded-2xl bg-black hover:bg-neutral-900 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
                   isRevoked ? 'opacity-50 pointer-events-none' : ''
                 }`}
@@ -534,12 +527,27 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
                 </svg>
                 <div className="text-left">
                   <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
-                    {downloading ? 'Opening Pass...' : 'Add to'}
+                    Add to
                   </p>
                   <p className="text-sm font-bold text-white leading-tight">Apple Wallet</p>
                 </div>
                 <span className="text-xs text-neutral-400 font-semibold ml-auto">Add ↗</span>
               </a>
+
+              {/* Direct R2 Download option on Desktop */}
+              <div className="flex items-center justify-between px-1 text-xs">
+                <a
+                  href={`/api/pass/download/${runnerId}/pass.pkpass`}
+                  download="pass.pkpass"
+                  className="text-slate-400 hover:text-white underline text-[11px]"
+                >
+                  Direct R2 .pkpass download
+                </a>
+                <span className="text-emerald-400 font-mono text-[11px] flex items-center space-x-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  <span>Delivered via Cloudflare R2</span>
+                </span>
+              </div>
 
               {/* Google Wallet Button */}
               <button
