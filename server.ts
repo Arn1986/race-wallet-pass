@@ -821,7 +821,7 @@ async function dispatchPassEmailServer(options: {
 }): Promise<{ success: boolean; error?: string; resendId?: string; hint?: string; passUrl?: string }> {
   const { to, firstName, runnerId, raceName, origin, googleSaveUrl, shareUrl } = options;
   const resendApiKey = d1Db.settings.resendApiKey;
-  const domain = (d1Db.settings.publicDomain && !d1Db.settings.publicDomain.includes('3fstriders.org') ? d1Db.settings.publicDomain : (origin || 'http://localhost:3000')).replace(/\/$/, '');
+  const domain = (d1Db.settings.publicDomain || origin || 'https://walletpass.3fstriders.org').replace(/\/$/, '');
   const passUrl = `${domain}/pass/${runnerId}`;
   const eventTitle = raceName || 'Official Athletic Event';
 
@@ -840,12 +840,6 @@ async function dispatchPassEmailServer(options: {
        </a>`
     : '';
 
-  const shareLinkHtml = shareUrl
-    ? `<p style="margin: 12px 0 0; font-size: 12px; color: #94a3b8; text-align: center;">
-        Device-Aware Pass Page: <a href="${shareUrl}" style="color: #38bdf8; text-decoration: underline;">${shareUrl}</a>
-       </p>`
-    : '';
-
   const html = `
     <!DOCTYPE html>
     <html>
@@ -862,18 +856,16 @@ async function dispatchPassEmailServer(options: {
             Your verified event pass is ready! You can add it directly to <strong>Apple Wallet</strong> or <strong>Google Wallet</strong> for real-time race updates, start wave alerts, and chute check-in.
           </p>
           <div style="text-align: center; margin: 28px 0;">
-            <a href="${passUrl}" style="background-color: #38bdf8; color: #0f172a; font-weight: 700; font-size: 14px; padding: 14px 28px; border-radius: 12px; text-decoration: none; display: inline-block; margin: 6px;">
-              View & Add to Apple Wallet →
+            <a href="${passUrl}" style="background-color: #38bdf8; color: #0f172a; font-weight: 700; font-size: 15px; padding: 15px 30px; border-radius: 12px; text-decoration: none; display: inline-block; margin: 6px; box-shadow: 0 4px 14px rgba(56,189,248,0.3);">
+              View & Add to Apple/Google Wallet →
             </a>
-            ${googleButtonHtml}
           </div>
           <p style="margin: 20px 0 0; font-size: 12px; color: #94a3b8; text-align: center;">
             Direct pass link: <a href="${passUrl}" style="color: #38bdf8; word-break: break-all;">${passUrl}</a>
           </p>
-          ${shareLinkHtml}
         </div>
         <div style="background: #0f172a; padding: 16px 24px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #334155;">
-          Powered by Node/Express & walletwallet.dev API • Pacific Athletic Series
+          ${eventTitle} • Official Participant Portal
         </div>
       </div>
     </body>

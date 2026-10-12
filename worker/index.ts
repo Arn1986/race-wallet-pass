@@ -250,12 +250,12 @@ async function sendPassEmail(options: {
   let publicDomain = '';
   if (savedDomain && savedDomain.trim()) {
     publicDomain = savedDomain.trim().replace(/\/$/, '');
-  } else if (env.PUBLIC_DOMAIN && !env.PUBLIC_DOMAIN.includes('3fstriders.org') && !env.PUBLIC_DOMAIN.includes('example.com')) {
-    publicDomain = env.PUBLIC_DOMAIN.replace(/\/$/, '');
+  } else if (env.PUBLIC_DOMAIN && env.PUBLIC_DOMAIN.trim()) {
+    publicDomain = env.PUBLIC_DOMAIN.trim().replace(/\/$/, '');
   } else if (requestOrigin && !requestOrigin.includes('localhost') && !requestOrigin.includes('127.0.0.1')) {
     publicDomain = requestOrigin.replace(/\/$/, '');
   } else {
-    publicDomain = (requestOrigin || env.PUBLIC_DOMAIN || 'https://race-wallet-pass.arnoldcaisip.workers.dev').replace(/\/$/, '');
+    publicDomain = 'https://walletpass.3fstriders.org';
   }
 
   const passUrl = `${publicDomain}/pass/${runnerId}`;
@@ -270,18 +270,6 @@ async function sendPassEmail(options: {
       passUrl,
     };
   }
-
-  const googleButtonHtml = googleSaveUrl
-    ? `<a href="${googleSaveUrl}" style="background-color: #1e293b; border: 1px solid #475569; color: #ffffff; font-weight: 700; font-size: 14px; padding: 14px 24px; border-radius: 12px; text-decoration: none; display: inline-block; margin: 6px;">
-        Save to Google Wallet →
-       </a>`
-    : '';
-
-  const shareLinkHtml = shareUrl
-    ? `<p style="margin: 12px 0 0; font-size: 12px; color: #94a3b8; text-align: center;">
-        Device-Aware Pass Page: <a href="${shareUrl}" style="color: #38bdf8; text-decoration: underline;">${shareUrl}</a>
-       </p>`
-    : '';
 
   const html = `
     <!DOCTYPE html>
@@ -299,18 +287,16 @@ async function sendPassEmail(options: {
             Your verified event pass is ready! You can add it directly to <strong>Apple Wallet</strong> or <strong>Google Wallet</strong> for real-time race updates, start wave alerts, and chute check-in.
           </p>
           <div style="text-align: center; margin: 28px 0;">
-            <a href="${passUrl}" style="background-color: #38bdf8; color: #0f172a; font-weight: 700; font-size: 14px; padding: 14px 28px; border-radius: 12px; text-decoration: none; display: inline-block; margin: 6px;">
-              View & Add to Apple Wallet →
+            <a href="${passUrl}" style="background-color: #38bdf8; color: #0f172a; font-weight: 700; font-size: 15px; padding: 15px 30px; border-radius: 12px; text-decoration: none; display: inline-block; margin: 6px; box-shadow: 0 4px 14px rgba(56,189,248,0.3);">
+              View & Add to Apple/Google Wallet →
             </a>
-            ${googleButtonHtml}
           </div>
           <p style="margin: 20px 0 0; font-size: 12px; color: #94a3b8; text-align: center;">
             Direct pass link: <a href="${passUrl}" style="color: #38bdf8; word-break: break-all;">${passUrl}</a>
           </p>
-          ${shareLinkHtml}
         </div>
         <div style="background: #0f172a; padding: 16px 24px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #334155;">
-          Powered by Cloudflare Edge & walletwallet.dev API • Pacific Athletic Series
+          ${eventTitle} • Official Participant Portal
         </div>
       </div>
     </body>
@@ -1651,30 +1637,61 @@ export default {
           const orgTitle = tplSchema.organizationName || '3F Striders';
           const passTitle = tplSchema.logoText || race?.name || 'Athletic Event';
 
+          const ua = request.headers.get('user-agent') || '';
+          const isIOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes('Macintosh') && ua.includes('Mobile'));
+          const isAndroid = /Android/i.test(ua);
+
+          let actionButtonsHtml = '';
+          const appleButton = `<a href="/api/pass/download/${runnerId}" class="btn-apple">
+            <svg viewBox="0 0 170 170" width="18" height="18" fill="currentColor" style="display: inline-block; vertical-align: middle; margin-right: 8px;"><path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.74 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.69-3.04-7.66-7.86-11.91-14.46-5.74-9.01-10.23-19.34-13.48-30.98-3.26-11.64-4.89-22.95-4.89-33.93 0-16.14 4.35-29.49 13.04-40.06 8.69-10.58 19.53-15.98 32.51-16.23 4.93 0 10.42 1.34 16.47 4.02 6.05 2.68 9.97 4.09 11.75 4.22 1.57-.13 5.74-1.61 12.51-4.43 6.77-2.82 12.44-4.08 17.02-3.79 12.73.65 23.01 5.34 30.82 14.07-11.22 6.74-16.71 16.4-16.47 28.98.24 9.94 4.09 18.23 11.55 24.87 7.46 6.64 16.46 10.32 27.01 11.03-2.24 6.84-4.99 14.08-8.26 21.72zM119.22 31.84c0-7.39 2.65-14.28 7.95-20.67 5.3-6.39 11.95-10.45 19.95-12.17.65 1.52.98 3.14.98 4.86 0 7.39-2.73 14.41-8.19 21.06-5.46 6.65-12.16 10.6-20.09 11.85-.43-1.63-.6-3.27-.6-4.93z"/></svg>
+            Add to Apple Wallet
+          </a>`;
+
           const googleButton = pass?.google_save_url
-            ? `<a href="${pass.google_save_url}" target="_blank" style="display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 14px 16px; background-color: #18181b; border: 1px solid #3f3f46; color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 16px; text-decoration: none; margin-bottom: 12px; box-sizing: border-box; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
-                Save to Google Wallet ↗
+            ? `<a href="${pass.google_save_url}" target="_blank" class="btn-google">
+                <svg viewBox="0 0 24 24" width="18" height="18" style="display: inline-block; vertical-align: middle; margin-right: 8px;"><path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/><path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.98 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/><path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/></svg>
+                Save to Google Wallet
                </a>`
             : '';
 
-          const shareLink = pass?.share_url
-            ? `<p style="text-align: center; margin: 14px 0 0; font-size: 12px;">
-                <a href="${pass.share_url}" target="_blank" style="color: #38bdf8; text-decoration: underline; font-weight: 600;">
-                  Open Device-Aware Pass Installation Page (WalletWallet) ↗
-                </a>
-               </p>`
-            : '';
+          if (isIOS) {
+            actionButtonsHtml = `
+              <div style="font-size: 11px; color: #38bdf8; margin-bottom: 8px; text-align: center; font-weight: 600;">📱 Apple Device Detected</div>
+              ${appleButton}
+              ${googleButton ? `<div style="text-align: center; margin-top: 6px;"><a href="${pass.google_save_url}" target="_blank" style="color: #94a3b8; font-size: 12px; text-decoration: underline;">Save to Google Wallet instead →</a></div>` : ''}
+            `;
+          } else if (isAndroid) {
+            actionButtonsHtml = `
+              <div style="font-size: 11px; color: #34d399; margin-bottom: 8px; text-align: center; font-weight: 600;">🤖 Android Device Detected</div>
+              ${googleButton || appleButton}
+              ${googleButton ? `<div style="text-align: center; margin-top: 6px;"><a href="/api/pass/download/${runnerId}" style="color: #94a3b8; font-size: 12px; text-decoration: underline;">Download Apple Wallet (.pkpass) instead →</a></div>` : ''}
+            `;
+          } else {
+            // Desktop: Show both buttons + Scan with phone QR code
+            const currentPassUrl = `${url.origin}/pass/${runnerId}`;
+            const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(currentPassUrl)}`;
+            actionButtonsHtml = `
+              ${appleButton}
+              ${googleButton}
+              <div style="margin-top: 16px; padding: 14px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; text-align: center;">
+                <div style="font-size: 12px; font-weight: 700; color: #f1f5f9; margin-bottom: 4px;">📲 Install to Phone via Camera</div>
+                <div style="font-size: 11px; color: #94a3b8; margin-bottom: 10px;">Scan with your iPhone or Android to add this pass:</div>
+                <img src="${qrCodeUrl}" alt="Scan QR Code" style="width: 140px; height: 140px; background: #ffffff; border-radius: 12px; padding: 6px; display: inline-block;" />
+              </div>
+            `;
+          }
 
           const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${passTitle} - Official Wallet Pass</title>
+  <title>${passTitle} - Official Participant Pass</title>
   <style>
     body { margin: 0; background-color: #09090b; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px 16px; box-sizing: border-box; }
     .card { width: 100%; max-width: 360px; background-color: ${bgHex}; border-radius: 26px; padding: 22px; border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6); box-sizing: border-box; }
-    .btn-apple { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 14px 16px; background-color: #000000; border: 1px solid rgba(255,255,255,0.2); color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 16px; text-decoration: none; margin-bottom: 12px; box-sizing: border-box; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .btn-apple { display: flex; align-items: center; justify-content: center; width: 100%; padding: 14px 16px; background-color: #000000; border: 1px solid rgba(255,255,255,0.2); color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 16px; text-decoration: none; margin-bottom: 10px; box-sizing: border-box; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .btn-google { display: flex; align-items: center; justify-content: center; width: 100%; padding: 14px 16px; background-color: #18181b; border: 1px solid #3f3f46; color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 16px; text-decoration: none; margin-bottom: 10px; box-sizing: border-box; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
     .badge { display: inline-block; font-size: 10px; font-family: monospace; text-transform: uppercase; background: rgba(0,0,0,0.3); padding: 4px 10px; border-radius: 9999px; border: 1px solid rgba(255,255,255,0.1); color: #94a3b8; margin-top: 4px; }
   </style>
 </head>
@@ -1694,7 +1711,7 @@ export default {
     <div style="text-align: center; padding: 12px 0 20px;">
       <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: #94a3b8; font-weight: 800;">BIB NUMBER</div>
       <div style="font-size: 52px; font-weight: 900; font-family: monospace; color: #ffffff; line-height: 1; margin: 6px 0;">${bib}</div>
-      <div class="badge">WalletWallet Standard • Preset: ${preset}</div>
+      <div class="badge">Official Digital Pass</div>
     </div>
 
     <div style="background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 14px; margin-bottom: 18px;">
@@ -1708,11 +1725,7 @@ export default {
       </div>
     </div>
 
-    <a href="/api/pass/download/${runnerId}" class="btn-apple">
-      Add to Apple Wallet (.pkpass) ↓
-    </a>
-    ${googleButton}
-    ${shareLink}
+    ${actionButtonsHtml}
   </div>
 </body>
 </html>`;

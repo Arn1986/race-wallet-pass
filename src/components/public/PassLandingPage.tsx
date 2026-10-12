@@ -25,11 +25,30 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
   } | null>(null);
 
   const [activePlatform, setActivePlatform] = useState<'apple' | 'google'>('apple');
+  const [detectedPlatform, setDetectedPlatform] = useState<'ios' | 'android' | 'desktop'>('desktop');
   const [isFlipped, setIsFlipped] = useState(false);
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [syncingPass, setSyncingPass] = useState(false);
   const [walletNotice, setWalletNotice] = useState<string | null>(null);
+
+  // Device-aware detection on mount
+  useEffect(() => {
+    const ua = navigator.userAgent || '';
+    const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isAndroid = /Android/i.test(ua);
+
+    if (isIOS) {
+      setDetectedPlatform('ios');
+      setActivePlatform('apple');
+    } else if (isAndroid) {
+      setDetectedPlatform('android');
+      setActivePlatform('google');
+    } else {
+      setDetectedPlatform('desktop');
+      setActivePlatform('apple');
+    }
+  }, []);
 
   // Live Push Notification Simulation
   const [pushNotification, setPushNotification] = useState<{
@@ -111,7 +130,7 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
         await fetchPassDetails();
         window.open(syncJson.googleSaveUrl, '_blank');
       } else {
-        const errorMsg = syncJson.error || 'WALLETWALLET_API_KEY is not configured yet.';
+        const errorMsg = syncJson.error || 'Google Wallet pass generation requires configured API keys in Settings.';
         setWalletNotice(errorMsg);
       }
     } catch (err: any) {
@@ -398,66 +417,169 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
           )}
         </div>
 
-        {/* Official "Add to Wallet" Action Buttons */}
+        {/* Official Device-Aware "Add to Wallet" Actions */}
         <div className="max-w-sm mx-auto space-y-3 mb-8">
           {/* Wallet Status Badge */}
           {pass.walletwallet_pass_id && (
             <div className="flex items-center justify-center space-x-1.5 py-1.5 px-3 rounded-full bg-emerald-950/60 border border-emerald-500/30 text-emerald-300 text-[11px] font-semibold text-center mb-1">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-              <span className="truncate">Wallet Pass Active • Serial: {pass.walletwallet_pass_id}</span>
+              <span className="truncate">Verified Pass Active • ID: {pass.walletwallet_pass_id.replace(/^ww_/, '')}</span>
             </div>
           )}
 
-          {/* Apple Wallet Official Button */}
-          <button
-            onClick={handleDownloadApplePass}
-            disabled={downloading || isRevoked}
-            className={`w-full py-3.5 px-4 rounded-2xl bg-black hover:bg-neutral-900 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
-              isRevoked ? 'opacity-50 cursor-not-allowed' : ''
-            }`}
-          >
-            {/* Apple Logo SVG */}
-            <svg viewBox="0 0 170 170" className="w-5 h-5 fill-current text-white">
-              <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.74 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.69-3.04-7.66-7.86-11.91-14.46-5.74-9.01-10.23-19.34-13.48-30.98-3.26-11.64-4.89-22.95-4.89-33.93 0-16.14 4.35-29.49 13.04-40.06 8.69-10.58 19.53-15.98 32.51-16.23 4.93 0 10.42 1.34 16.47 4.02 6.05 2.68 9.97 4.09 11.75 4.22 1.57-.13 5.74-1.61 12.51-4.43 6.77-2.82 12.44-4.08 17.02-3.79 12.73.65 23.01 5.34 30.82 14.07-11.22 6.74-16.71 16.4-16.47 28.98.24 9.94 4.09 18.23 11.55 24.87 7.46 6.64 16.46 10.32 27.01 11.03-2.24 6.84-4.99 14.08-8.26 21.72zM119.22 31.84c0-7.39 2.65-14.28 7.95-20.67 5.3-6.39 11.95-10.45 19.95-12.17.65 1.52.98 3.14.98 4.86 0 7.39-2.73 14.41-8.19 21.06-5.46 6.65-12.16 10.6-20.09 11.85-.43-1.63-.6-3.27-.6-4.93z" />
-            </svg>
-            <div className="text-left">
-              <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
-                {downloading ? 'Streaming .pkpass...' : 'Add to'}
-              </p>
-              <p className="text-sm font-bold text-white leading-tight">Apple Wallet</p>
+          {/* Smart Device-Aware Banner */}
+          {detectedPlatform === 'ios' && (
+            <div className="flex items-center justify-center space-x-2 py-2 px-3.5 rounded-xl bg-slate-900 border border-sky-500/30 text-sky-300 text-xs font-semibold text-center">
+              <Smartphone className="w-4 h-4 text-sky-400 flex-shrink-0" />
+              <span>Apple iPhone detected — Add directly to Apple Wallet below</span>
             </div>
-            <Download className="w-4 h-4 text-neutral-400 ml-auto" />
-          </button>
+          )}
 
-          {/* Google Wallet Official Button */}
-          <button
-            onClick={handleAddGoogleWallet}
-            disabled={isRevoked || syncingPass}
-            className={`w-full py-3.5 px-4 rounded-2xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
-              isRevoked ? 'opacity-50 cursor-not-allowed' : ''
-            }`}
-          >
-            <svg viewBox="0 0 24 24" className="w-5 h-5">
-              <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
-              <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/>
-              <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.98 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
-              <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
-            </svg>
-            <div className="text-left">
-              <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
-                {syncingPass ? 'Generating Google Pass...' : 'Save to'}
-              </p>
-              <p className="text-sm font-bold text-white leading-tight">Google Wallet</p>
+          {detectedPlatform === 'android' && (
+            <div className="flex items-center justify-center space-x-2 py-2 px-3.5 rounded-xl bg-slate-900 border border-emerald-500/30 text-emerald-300 text-xs font-semibold text-center">
+              <Smartphone className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+              <span>Android device detected — Save directly to Google Wallet below</span>
             </div>
-            <Sparkles className="w-4 h-4 text-sky-400 ml-auto" />
-          </button>
+          )}
 
-          {/* Wallet Notice Card */}
+          {/* iOS Device Priority: Apple Wallet is Primary */}
+          {detectedPlatform === 'ios' ? (
+            <>
+              {/* Apple Wallet Primary Button */}
+              <button
+                onClick={handleDownloadApplePass}
+                disabled={downloading || isRevoked}
+                className={`w-full py-4 px-4 rounded-2xl bg-black hover:bg-neutral-900 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
+                  isRevoked ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
+              >
+                <svg viewBox="0 0 170 170" className="w-5 h-5 fill-current text-white">
+                  <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.74 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.69-3.04-7.66-7.86-11.91-14.46-5.74-9.01-10.23-19.34-13.48-30.98-3.26-11.64-4.89-22.95-4.89-33.93 0-16.14 4.35-29.49 13.04-40.06 8.69-10.58 19.53-15.98 32.51-16.23 4.93 0 10.42 1.34 16.47 4.02 6.05 2.68 9.97 4.09 11.75 4.22 1.57-.13 5.74-1.61 12.51-4.43 6.77-2.82 12.44-4.08 17.02-3.79 12.73.65 23.01 5.34 30.82 14.07-11.22 6.74-16.71 16.4-16.47 28.98.24 9.94 4.09 18.23 11.55 24.87 7.46 6.64 16.46 10.32 27.01 11.03-2.24 6.84-4.99 14.08-8.26 21.72zM119.22 31.84c0-7.39 2.65-14.28 7.95-20.67 5.3-6.39 11.95-10.45 19.95-12.17.65 1.52.98 3.14.98 4.86 0 7.39-2.73 14.41-8.19 21.06-5.46 6.65-12.16 10.6-20.09 11.85-.43-1.63-.6-3.27-.6-4.93z" />
+                </svg>
+                <div className="text-left">
+                  <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
+                    {downloading ? 'Adding to Wallet...' : 'Add to'}
+                  </p>
+                  <p className="text-sm font-bold text-white leading-tight">Apple Wallet</p>
+                </div>
+                <Download className="w-4 h-4 text-neutral-400 ml-auto" />
+              </button>
+
+              {/* Google Wallet Secondary Option */}
+              <button
+                onClick={handleAddGoogleWallet}
+                disabled={isRevoked || syncingPass}
+                className="w-full py-2.5 px-3 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white text-xs font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer"
+              >
+                <span>Save to Google Wallet instead →</span>
+              </button>
+            </>
+          ) : detectedPlatform === 'android' ? (
+            <>
+              {/* Google Wallet Primary Button */}
+              <button
+                onClick={handleAddGoogleWallet}
+                disabled={isRevoked || syncingPass}
+                className={`w-full py-4 px-4 rounded-2xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
+                  isRevoked ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
+              >
+                <svg viewBox="0 0 24 24" className="w-5 h-5">
+                  <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+                  <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/>
+                  <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.98 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+                  <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+                </svg>
+                <div className="text-left">
+                  <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
+                    {syncingPass ? 'Generating Pass...' : 'Save to'}
+                  </p>
+                  <p className="text-sm font-bold text-white leading-tight">Google Wallet</p>
+                </div>
+                <Sparkles className="w-4 h-4 text-sky-400 ml-auto" />
+              </button>
+
+              {/* Apple Wallet Secondary Option */}
+              <button
+                onClick={handleDownloadApplePass}
+                disabled={downloading || isRevoked}
+                className="w-full py-2.5 px-3 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white text-xs font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer"
+              >
+                <span>Download Apple Wallet (.pkpass) instead →</span>
+              </button>
+            </>
+          ) : (
+            /* Desktop / Dual Mode */
+            <>
+              {/* Apple Wallet Button */}
+              <button
+                onClick={handleDownloadApplePass}
+                disabled={downloading || isRevoked}
+                className={`w-full py-3.5 px-4 rounded-2xl bg-black hover:bg-neutral-900 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
+                  isRevoked ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
+              >
+                <svg viewBox="0 0 170 170" className="w-5 h-5 fill-current text-white">
+                  <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.74 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.69-3.04-7.66-7.86-11.91-14.46-5.74-9.01-10.23-19.34-13.48-30.98-3.26-11.64-4.89-22.95-4.89-33.93 0-16.14 4.35-29.49 13.04-40.06 8.69-10.58 19.53-15.98 32.51-16.23 4.93 0 10.42 1.34 16.47 4.02 6.05 2.68 9.97 4.09 11.75 4.22 1.57-.13 5.74-1.61 12.51-4.43 6.77-2.82 12.44-4.08 17.02-3.79 12.73.65 23.01 5.34 30.82 14.07-11.22 6.74-16.71 16.4-16.47 28.98.24 9.94 4.09 18.23 11.55 24.87 7.46 6.64 16.46 10.32 27.01 11.03-2.24 6.84-4.99 14.08-8.26 21.72zM119.22 31.84c0-7.39 2.65-14.28 7.95-20.67 5.3-6.39 11.95-10.45 19.95-12.17.65 1.52.98 3.14.98 4.86 0 7.39-2.73 14.41-8.19 21.06-5.46 6.65-12.16 10.6-20.09 11.85-.43-1.63-.6-3.27-.6-4.93z" />
+                </svg>
+                <div className="text-left">
+                  <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
+                    {downloading ? 'Streaming .pkpass...' : 'Add to'}
+                  </p>
+                  <p className="text-sm font-bold text-white leading-tight">Apple Wallet</p>
+                </div>
+                <Download className="w-4 h-4 text-neutral-400 ml-auto" />
+              </button>
+
+              {/* Google Wallet Button */}
+              <button
+                onClick={handleAddGoogleWallet}
+                disabled={isRevoked || syncingPass}
+                className={`w-full py-3.5 px-4 rounded-2xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
+                  isRevoked ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
+              >
+                <svg viewBox="0 0 24 24" className="w-5 h-5">
+                  <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+                  <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/>
+                  <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.98 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+                  <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+                </svg>
+                <div className="text-left">
+                  <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
+                    {syncingPass ? 'Generating Google Pass...' : 'Save to'}
+                  </p>
+                  <p className="text-sm font-bold text-white leading-tight">Google Wallet</p>
+                </div>
+                <Sparkles className="w-4 h-4 text-sky-400 ml-auto" />
+              </button>
+
+              {/* Desktop QR Scan Card (Seamless phone install feature) */}
+              <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-2.5 mt-2">
+                <div className="flex items-center justify-center space-x-1.5 text-xs font-semibold text-slate-200">
+                  <QrCode className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Install to Phone via Camera</span>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-normal max-w-xs mx-auto">
+                  Scan with your iPhone or Android camera to immediately open this pass on your phone and add to your native wallet.
+                </p>
+                <div className="inline-block p-2.5 bg-white rounded-xl shadow-md my-1">
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(typeof window !== 'undefined' ? window.location.href : '')}`}
+                    alt="Scan with mobile camera to install pass"
+                    className="w-32 h-32 block mx-auto rounded"
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Notice Card */}
           {walletNotice && (
             <div className="p-3.5 rounded-2xl bg-amber-950/40 border border-amber-800/60 text-xs text-amber-200 space-y-1.5 text-left">
               <div className="font-bold flex items-center justify-between text-amber-300">
                 <span className="flex items-center gap-1.5">
-                  <AlertCircle className="w-4 h-4 text-amber-400" /> Wallet API Key Notice
+                  <AlertCircle className="w-4 h-4 text-amber-400" /> Pass Status Notice
                 </span>
                 <button
                   onClick={() => setWalletNotice(null)}
@@ -468,9 +590,6 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
               </div>
               <p className="text-[11px] text-amber-200/90 leading-relaxed">
                 {walletNotice}
-              </p>
-              <p className="text-[10.5px] text-slate-400">
-                To issue real signed Apple & Google passes, obtain a free API key at <a href="https://www.walletwallet.dev" target="_blank" rel="noreferrer" className="text-sky-400 underline">walletwallet.dev</a> (up to 1,000 passes/mo) and add it under Admin Settings or wrangler.toml.
               </p>
               {onNavigateHome && (
                 <div className="pt-1">
@@ -484,33 +603,6 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
               )}
             </div>
           )}
-
-          {/* WalletWallet Hosted Device-Aware Share Link */}
-          {data.pass?.share_url && (
-            <a
-              href={data.pass.share_url}
-              target="_blank"
-              rel="noreferrer"
-              className="w-full py-2.5 px-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-800 text-sky-400 hover:text-sky-300 text-xs font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer text-center"
-            >
-              <span>Open Device-Aware Install Page (WalletWallet)</span>
-              <ExternalLink className="w-3.5 h-3.5" />
-            </a>
-          )}
-
-          {/* Desktop QR Scan Card (WalletWallet device-aware phone install feature) */}
-          <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-2 mt-2">
-            <div className="flex items-center justify-center space-x-1.5 text-xs font-semibold text-slate-200">
-              <QrCode className="w-3.5 h-3.5 text-sky-400" />
-              <span>Install to Phone via Camera</span>
-            </div>
-            <p className="text-[11px] text-slate-400 leading-normal max-w-xs mx-auto">
-              Scan with your iPhone or Android camera to immediately add this pass to your native mobile wallet.
-            </p>
-            <div className="inline-block p-2 bg-white rounded-xl shadow-md my-1">
-              <QrCode className="w-24 h-24 text-slate-900" />
-            </div>
-          </div>
         </div>
 
         {/* Live APNs / Push Notification Test Console (For Organizers and Runners) */}

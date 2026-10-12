@@ -983,17 +983,15 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                         <span>Direct Save to Google Wallet ↗</span>
                       </a>
                     )}
-                    {participantResultModal.pass?.share_url && (
-                      <a
-                        href={participantResultModal.pass.share_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-sky-400 font-semibold text-[11px] flex items-center gap-1.5 transition-all"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        <span>WalletWallet Install Page ↗</span>
-                      </a>
-                    )}
+                    <a
+                      href={`/pass/${participantResultModal.runner.id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-[11px] flex items-center gap-1.5 transition-all shadow-sm"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Open Pass Landing Page ↗</span>
+                    </a>
                   </div>
                 </div>
               ) : participantResultModal.walletwalletDelivery?.error ? (

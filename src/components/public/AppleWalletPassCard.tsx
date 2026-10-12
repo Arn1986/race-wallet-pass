@@ -291,14 +291,14 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Live Lock Screen Updates
               </div>
               <p className="text-[10px] opacity-80 leading-normal">
-                Organizers push wave alerts, pace adjustments, and emergency notifications directly to this pass via WalletWallet APNs.
+                Organizers push wave alerts, corral timing, and emergency notifications directly to this pass via live Wallet push updates.
               </p>
             </div>
           </div>
 
           <div className="p-3 bg-black/20 border-t border-white/10 text-center">
             <p className="text-[10px] text-white/50">
-              {orgName} • Powered by WalletWallet API
+              {orgName} • Official Digital Event Pass
             </p>
           </div>
         </div>
