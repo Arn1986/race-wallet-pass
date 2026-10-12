@@ -1061,6 +1061,8 @@ export default {
         const r2Key2 = `passes/${runnerId}.pkpass`;
         const r2Key3 = `passes/${runnerId}/pass.pkpass`;
 
+        const isDownload = searchParams.get('download') === '1' || searchParams.get('dl') === 'true';
+
         // 1. Direct Delivery from Cloudflare R2 Bucket
         if (r2Bucket) {
           try {
@@ -1069,7 +1071,12 @@ export default {
               const headers = new Headers();
               r2Obj.writeHttpMetadata(headers);
               headers.set('Content-Type', 'application/vnd.apple.pkpass');
-              headers.set('Content-Disposition', 'attachment; filename="pass.pkpass"');
+              if (isDownload) {
+                headers.set('Content-Disposition', 'attachment; filename="pass.pkpass"');
+              } else {
+                headers.delete('Content-Disposition');
+                headers.delete('content-disposition');
+              }
               headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
               headers.set('Vary', 'Origin');
               headers.set('x-r2-source', 'cloudflare-r2');
@@ -1156,7 +1163,6 @@ export default {
             const r2Meta = {
               httpMetadata: {
                 contentType: 'application/vnd.apple.pkpass',
-                contentDisposition: 'attachment; filename="pass.pkpass"',
                 cacheControl: 'no-store, no-cache, must-revalidate',
               },
             };
@@ -1179,15 +1185,19 @@ export default {
           r2SaveStatus = 'binding_not_found';
         }
 
+        const respHeaders: Record<string, string> = {
+          'Content-Type': 'application/vnd.apple.pkpass',
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          'Vary': 'Origin',
+          'x-r2-status': r2SaveStatus,
+          ...corsHeaders,
+        };
+        if (isDownload) {
+          respHeaders['Content-Disposition'] = 'attachment; filename="pass.pkpass"';
+        }
+
         return new Response(passBytes as any, {
-          headers: {
-            'Content-Type': 'application/vnd.apple.pkpass',
-            'Content-Disposition': 'attachment; filename="pass.pkpass"',
-            'Cache-Control': 'no-store, no-cache, must-revalidate',
-            'Vary': 'Origin',
-            'x-r2-status': r2SaveStatus,
-            ...corsHeaders,
-          },
+          headers: respHeaders,
         });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
@@ -1473,15 +1483,13 @@ export default {
             await env.ASSETS_BUCKET.put(r2Key, passBytes, {
               httpMetadata: {
                 contentType: 'application/vnd.apple.pkpass',
-                contentDisposition: 'attachment; filename="pass.pkpass"',
-                cacheControl: 'public, max-age=31536000, immutable',
+                cacheControl: 'no-store, no-cache, must-revalidate',
               },
             });
             await env.ASSETS_BUCKET.put(`passes/${runnerId}.pkpass`, passBytes, {
               httpMetadata: {
                 contentType: 'application/vnd.apple.pkpass',
-                contentDisposition: 'attachment; filename="pass.pkpass"',
-                cacheControl: 'public, max-age=31536000, immutable',
+                cacheControl: 'no-store, no-cache, must-revalidate',
               },
             });
           } catch (r2Err) {
@@ -1526,7 +1534,6 @@ export default {
             const r2Meta = {
               httpMetadata: {
                 contentType: 'application/vnd.apple.pkpass',
-                contentDisposition: 'attachment; filename="pass.pkpass"',
                 cacheControl: 'no-store, no-cache, must-revalidate',
               },
             };

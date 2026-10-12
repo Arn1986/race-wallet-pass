@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AppleWalletPassCard } from './AppleWalletPassCard.tsx';
 import { GoogleWalletPassCard } from './GoogleWalletPassCard.tsx';
 import { Runner, Race, PassTemplate, Pass } from '../../types/index.ts';
-import { Download, Share2, ArrowLeft, Check, BellRing, Sparkles, RefreshCw, AlertCircle, Smartphone, ExternalLink, QrCode, ShieldCheck } from 'lucide-react';
+import { Download, Share2, ArrowLeft, Check, BellRing, Sparkles, RefreshCw, AlertCircle, Smartphone, ExternalLink, QrCode, ShieldCheck, X, Copy, CheckCircle2, ChevronRight } from 'lucide-react';
 
 interface PassLandingPageProps {
   runnerId: string;
@@ -31,6 +31,10 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
   const [downloading, setDownloading] = useState(false);
   const [syncingPass, setSyncingPass] = useState(false);
   const [walletNotice, setWalletNotice] = useState<string | null>(null);
+
+  // Apple Wallet Modal & Browser Detection
+  const [showAppleModal, setShowAppleModal] = useState(false);
+  const [copiedSafariLink, setCopiedSafariLink] = useState(false);
 
   // Device-aware detection on mount
   const [isInAppBrowser, setIsInAppBrowser] = useState(false);
@@ -83,18 +87,26 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
     fetchPassDetails();
   }, [runnerId]);
 
-  const handleDownloadApplePass = () => {
+  const handleOpenAppleWallet = () => {
     if (!data || isRevoked) return;
     setDownloading(true);
+    setShowAppleModal(true);
 
-    // Direct top-level navigation: On iOS Safari, the browser hands application/vnd.apple.pkpass to PassKit
-    // to pop up the native Apple Wallet "Add Pass" modal sheet.
+    // Direct PassKit trigger for iOS Safari:
+    // Calling the endpoint directly prompts the native Apple Wallet "Add" sheet on Safari
     window.location.href = `/api/pass/download/${runnerId}/pass.pkpass`;
 
     setTimeout(() => {
       fetchPassDetails();
       setDownloading(false);
     }, 2500);
+  };
+
+  const handleCopySafariLink = () => {
+    const fullUrl = `${window.location.origin}/api/pass/download/${runnerId}/pass.pkpass`;
+    navigator.clipboard.writeText(fullUrl);
+    setCopiedSafariLink(true);
+    setTimeout(() => setCopiedSafariLink(false), 3000);
   };
 
   const handleAddGoogleWallet = async () => {
@@ -436,9 +448,11 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
           {/* iOS Device Priority: Apple Wallet is Primary */}
           {detectedPlatform === 'ios' ? (
             <>
-              {/* Apple Wallet Primary Link (opens native PassKit modal on iOS Safari) */}
-              <a
-                href={`/api/pass/download/${runnerId}/pass.pkpass`}
+              {/* Apple Wallet Primary Button (opens popup & triggers PassKit sheet) */}
+              <button
+                type="button"
+                onClick={handleOpenAppleWallet}
+                disabled={isRevoked || downloading}
                 className={`w-full py-4 px-4 rounded-2xl bg-black hover:bg-neutral-900 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
                   isRevoked ? 'opacity-50 pointer-events-none' : ''
                 }`}
@@ -448,17 +462,17 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
                 </svg>
                 <div className="text-left">
                   <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
-                    Add to
+                    {downloading ? 'Opening Pass...' : 'Add to'}
                   </p>
                   <p className="text-sm font-bold text-white leading-tight">Apple Wallet</p>
                 </div>
                 <span className="text-xs text-sky-400 font-semibold ml-auto">Add ↗</span>
-              </a>
+              </button>
 
               {/* Direct R2 Download Fallback */}
               <div className="flex items-center justify-between px-1 text-xs">
                 <a
-                  href={`/api/pass/download/${runnerId}/pass.pkpass`}
+                  href={`/api/pass/download/${runnerId}/pass.pkpass?download=1`}
                   download="pass.pkpass"
                   className="text-slate-400 hover:text-white underline text-[11px]"
                 >
@@ -505,19 +519,21 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
               </button>
 
               {/* Apple Wallet Secondary Option */}
-              <a
-                href={`/api/pass/download/${runnerId}/pass.pkpass`}
+              <button
+                onClick={handleOpenAppleWallet}
                 className="w-full py-2.5 px-3 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white text-xs font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer"
               >
-                <span>Download Apple Wallet (.pkpass) instead →</span>
-              </a>
+                <span>Add Apple Wallet (.pkpass) instead →</span>
+              </button>
             </>
           ) : (
             /* Desktop / Dual Mode */
             <>
               {/* Apple Wallet Button */}
-              <a
-                href={`/api/pass/download/${runnerId}/pass.pkpass`}
+              <button
+                type="button"
+                onClick={handleOpenAppleWallet}
+                disabled={isRevoked || downloading}
                 className={`w-full py-3.5 px-4 rounded-2xl bg-black hover:bg-neutral-900 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
                   isRevoked ? 'opacity-50 pointer-events-none' : ''
                 }`}
@@ -527,17 +543,17 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
                 </svg>
                 <div className="text-left">
                   <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
-                    Add to
+                    {downloading ? 'Opening Pass...' : 'Add to'}
                   </p>
                   <p className="text-sm font-bold text-white leading-tight">Apple Wallet</p>
                 </div>
                 <span className="text-xs text-neutral-400 font-semibold ml-auto">Add ↗</span>
-              </a>
+              </button>
 
               {/* Direct R2 Download option on Desktop */}
               <div className="flex items-center justify-between px-1 text-xs">
                 <a
-                  href={`/api/pass/download/${runnerId}/pass.pkpass`}
+                  href={`/api/pass/download/${runnerId}/pass.pkpass?download=1`}
                   download="pass.pkpass"
                   className="text-slate-400 hover:text-white underline text-[11px]"
                 >
@@ -683,6 +699,158 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
           </p>
         </div>
       </main>
+
+      {/* Interactive Apple Wallet Pop-up Modal */}
+      {showAppleModal && data && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200"
+          onClick={() => setShowAppleModal(false)}
+        >
+          <div
+            className="w-full max-w-md bg-neutral-900 border border-neutral-700 rounded-3xl shadow-2xl p-6 relative space-y-5 animate-in zoom-in-95 duration-200 text-left"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-2xl bg-black border border-neutral-700 flex items-center justify-center shadow-inner">
+                  <svg viewBox="0 0 170 170" className="w-6 h-6 fill-current text-white">
+                    <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.74 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.69-3.04-7.66-7.86-11.91-14.46-5.74-9.01-10.23-19.34-13.48-30.98-3.26-11.64-4.89-22.95-4.89-33.93 0-16.14 4.35-29.49 13.04-40.06 8.69-10.58 19.53-15.98 32.51-16.23 4.93 0 10.42 1.34 16.47 4.02 6.05 2.68 9.97 4.09 11.75 4.22 1.57-.13 5.74-1.61 12.51-4.43 6.77-2.82 12.44-4.08 17.02-3.79 12.73.65 23.01 5.34 30.82 14.07-11.22 6.74-16.71 16.4-16.47 28.98.24 9.94 4.09 18.23 11.55 24.87 7.46 6.64 16.46 10.32 27.01 11.03-2.24 6.84-4.99 14.08-8.26 21.72zM119.22 31.84c0-7.39 2.65-14.28 7.95-20.67 5.3-6.39 11.95-10.45 19.95-12.17.65 1.52.98 3.14.98 4.86 0 7.39-2.73 14.41-8.19 21.06-5.46 6.65-12.16 10.6-20.09 11.85-.43-1.63-.6-3.27-.6-4.93z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white leading-tight">
+                    Add to Apple Wallet
+                  </h3>
+                  <p className="text-xs text-neutral-400">
+                    {data.race.name} • {data.runner.first_name} {data.runner.last_name}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAppleModal(false)}
+                className="p-1.5 rounded-full bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white transition-all cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Pass Preview Mini Card */}
+            {(() => {
+              let bib = 'Pass';
+              let wave = 'General';
+              try {
+                const dyn = JSON.parse(data.runner.dynamic_data || '{}');
+                bib = dyn.bib_number || dyn.bib || 'Pass';
+                wave = dyn.start_wave || dyn.wave || 'General';
+              } catch {
+                // ignore
+              }
+              return (
+                <div className="p-3.5 rounded-2xl bg-neutral-950 border border-neutral-800 flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <span className="text-[10px] uppercase font-bold tracking-wider text-sky-400">
+                      Participant Pass
+                    </span>
+                    <p className="text-sm font-bold text-white">
+                      {data.runner.first_name} {data.runner.last_name}
+                    </p>
+                    <p className="text-xs text-neutral-400 font-mono">
+                      BIB #{bib} • {wave}
+                    </p>
+                  </div>
+                  <div className="px-2.5 py-1 rounded-full bg-sky-950 border border-sky-800/80 text-[11px] font-semibold text-sky-300 flex items-center space-x-1">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Signed</span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Native Safari Add Instructions */}
+            <div className="p-4 rounded-2xl bg-sky-950/40 border border-sky-500/30 space-y-2">
+              <div className="flex items-center space-x-2 text-sky-300 text-xs font-semibold">
+                <Sparkles className="w-4 h-4 text-sky-400" />
+                <span>On iPhone (Safari):</span>
+              </div>
+              <p className="text-xs text-sky-100/90 leading-relaxed">
+                Safari is opening the native PassKit overlay. When the Apple Wallet sheet appears with your pass details, tap <strong className="text-white underline">"Add"</strong> in the top-right corner to save it directly into Apple Wallet.
+              </p>
+            </div>
+
+            {/* In-App Browser / Non-Safari Advice */}
+            <div className="p-3.5 rounded-2xl bg-amber-950/40 border border-amber-500/30 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2 text-amber-300 text-xs font-semibold">
+                  <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                  <span>Using Chrome or Gmail app on iPhone?</span>
+                </div>
+              </div>
+              <p className="text-[11px] text-amber-200/80 leading-relaxed">
+                iOS restricts native 1-tap Wallet addition inside Chrome, Gmail, or Facebook webviews. To add in 1 tap, open in Safari:
+              </p>
+              <button
+                type="button"
+                onClick={handleCopySafariLink}
+                className="w-full py-2.5 px-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 text-xs font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer"
+              >
+                {copiedSafariLink ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="text-emerald-300">Link Copied! Paste in Safari</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Copy Direct Pass Link for Safari</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Actions */}
+            <div className="space-y-2 pt-1">
+              <a
+                href={`/api/pass/download/${runnerId}/pass.pkpass`}
+                className="w-full py-3.5 px-4 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs flex items-center justify-center space-x-2 transition-all shadow-lg cursor-pointer"
+              >
+                <span>Trigger Apple Wallet Sheet Again</span>
+                <ChevronRight className="w-4 h-4" />
+              </a>
+
+              {data.pass?.share_url && (
+                <a
+                  href={data.pass.share_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full py-2.5 px-3 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer border border-neutral-700"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 text-neutral-400" />
+                  <span>Open via Hosted Card (walletwallet.dev)</span>
+                </a>
+              )}
+
+              <div className="flex items-center justify-between pt-2 px-1 text-xs">
+                <a
+                  href={`/api/pass/download/${runnerId}/pass.pkpass?download=1`}
+                  download="pass.pkpass"
+                  className="text-neutral-400 hover:text-white underline text-[11px]"
+                >
+                  Download .pkpass file manually
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setShowAppleModal(false)}
+                  className="text-neutral-400 hover:text-white text-[11px] font-semibold cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

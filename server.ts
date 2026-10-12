@@ -47,6 +47,7 @@ app.get(['/api/pass/download/:id', '/api/pass/download/:id/pass.pkpass', '/api/p
     // Mark Apple Wallet installation
     d1Db.updatePass(pass.id, { installed_apple: 1 });
 
+    const isDownload = req.query.download === '1' || req.query.dl === 'true';
     let bibNumber = 'pass';
     try {
       const dyn = JSON.parse(runner.dynamic_data || '{}');
@@ -59,7 +60,9 @@ app.get(['/api/pass/download/:id', '/api/pass/download/:id/pass.pkpass', '/api/p
     if (pass.apple_pass_base64) {
       const buffer = Buffer.from(pass.apple_pass_base64, 'base64');
       res.setHeader('Content-Type', 'application/vnd.apple.pkpass');
-      res.setHeader('Content-Disposition', 'attachment; filename="pass.pkpass"');
+      if (isDownload) {
+        res.setHeader('Content-Disposition', 'attachment; filename="pass.pkpass"');
+      }
       res.setHeader('Content-Length', buffer.length);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       return res.end(buffer);
@@ -75,10 +78,11 @@ app.get(['/api/pass/download/:id', '/api/pass/download/:id/pass.pkpass', '/api/p
     });
 
     res.setHeader('Content-Type', 'application/vnd.apple.pkpass');
-    res.setHeader('Content-Disposition', 'attachment; filename="pass.pkpass"');
+    if (isDownload) {
+      res.setHeader('Content-Disposition', 'attachment; filename="pass.pkpass"');
+    }
     res.setHeader('Content-Length', buffer.length);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-
     return res.end(buffer);
   } catch (error: any) {
     console.error('Error generating .pkpass download:', error);
