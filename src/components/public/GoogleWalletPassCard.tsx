@@ -1,6 +1,6 @@
 import React from 'react';
-import { Runner, PassTemplate, Race, Pass } from '../../types/index.ts';
-import { QrCode, Sparkles, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Runner, PassTemplate, Race, Pass, getWalletColorPreset } from '../../types/index.ts';
+import { QrCode, Sparkles, CheckCircle2, AlertTriangle, Barcode } from 'lucide-react';
 
 interface GoogleWalletPassCardProps {
   runner: Runner;
@@ -22,6 +22,13 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
     dynamicData = {};
   }
 
+  let schema: any = {};
+  try {
+    schema = JSON.parse(template.schema_definition || '{}');
+  } catch {
+    schema = {};
+  }
+
   let fieldMapping: Record<string, string> = {};
   try {
     fieldMapping = JSON.parse(race.field_mapping || '{}');
@@ -33,19 +40,50 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
     const mapped = fieldMapping[fieldKey] || fieldKey;
     if (dynamicData[mapped] !== undefined && dynamicData[mapped] !== '') return String(dynamicData[mapped]);
     if (dynamicData[fieldKey] !== undefined && dynamicData[fieldKey] !== '') return String(dynamicData[fieldKey]);
-    if (fieldKey === 'bib') return dynamicData.bib_number || dynamicData.bib || '1042';
-    if (fieldKey === 'category') return dynamicData.race_division || dynamicData.category || 'Marathon';
-    if (fieldKey === 'wave') return dynamicData.start_wave || dynamicData.wave || 'Wave A';
+    if (fieldKey === 'bib' || fieldKey === 'bib_number') return dynamicData.bib_number || dynamicData.bib || '1042';
+    if (fieldKey === 'category' || fieldKey === 'division') return dynamicData.race_division || dynamicData.category || dynamicData.division || 'Full Marathon (42.2K)';
+    if (fieldKey === 'wave' || fieldKey === 'start_wave') return dynamicData.start_wave || dynamicData.wave || 'Wave A';
+    if (fieldKey === 'runner_name') return `${runner.first_name} ${runner.last_name}`;
+    if (fieldKey === 'email') return runner.email;
     return fallback;
   };
 
   const isRevoked = pass?.status === 'revoked';
 
+  // Derive WalletWallet Color Preset styling
+  const chosenPresetKey = schema.colorPreset || template.background_color;
+  const preset = getWalletColorPreset(chosenPresetKey);
+
+  const logoText = (schema.logoText || race.name || template.name || 'Athletic Event').slice(0, 64);
+  const orgName = (schema.organizationName || '3F Striders').slice(0, 64);
+
+  const headerField = schema.headerFields?.[0] || { label: 'WAVE', key: 'wave' };
+  const primaryField = schema.primaryFields?.[0] || { label: 'BIB NUMBER', key: 'bib' };
+  
+  const secondaryFields = (schema.secondaryFields && schema.secondaryFields.length > 0)
+    ? schema.secondaryFields
+    : [
+        { label: 'PARTICIPANT', key: 'runner_name' },
+        { label: 'DIVISION', key: 'category' },
+      ];
+
+  const barcodeFormat = schema.barcodeFormat || 'QR';
+  const bibValue = resolveVal('bib', '1042');
+  const barcodeAltText = schema.barcodeAltText
+    ? schema.barcodeAltText.replace('{{bib}}', bibValue)
+    : `BIB #${bibValue} • ${runner.first_name} ${runner.last_name}`;
+
   return (
     <div className="relative mx-auto w-full max-w-[340px] sm:max-w-[360px] select-none">
-      <div className="rounded-[28px] bg-slate-900 border border-slate-700/80 shadow-2xl overflow-hidden text-white flex flex-col">
+      <div 
+        className="rounded-[28px] shadow-2xl overflow-hidden flex flex-col border border-white/10"
+        style={{
+          backgroundColor: preset.bgHex,
+          color: preset.textHex,
+        }}
+      >
         {/* Google Wallet Header Pill */}
-        <div className="px-5 pt-4 pb-3 flex items-center justify-between border-b border-slate-800">
+        <div className="px-5 pt-4 pb-3 flex items-center justify-between border-b border-white/10 bg-black/20">
           <div className="flex items-center space-x-2">
             <div className="w-5 h-5 flex items-center justify-center">
               <svg viewBox="0 0 24 24" className="w-5 h-5">
@@ -55,10 +93,10 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
                 <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
               </svg>
             </div>
-            <span className="text-xs font-semibold tracking-wide text-slate-300">Google Wallet</span>
+            <span className="text-xs font-semibold tracking-wide text-white">Google Wallet</span>
           </div>
 
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/10 text-white/90 border border-white/10">
             EVENT PASS
           </span>
         </div>
@@ -69,67 +107,83 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
           </div>
         )}
 
-        {/* Hero banner */}
-        <div className="p-5 pb-3">
+        {/* Card Body */}
+        <div className="p-5 pb-4">
           <div className="flex items-center space-x-3 mb-4">
-            <div className="w-12 h-12 rounded-2xl overflow-hidden bg-slate-800 border border-slate-700 flex-shrink-0">
-              {template.logo_image_url ? (
-                <img src={template.logo_image_url} alt="Logo" className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-sky-400">
-                  <Sparkles className="w-6 h-6" />
-                </div>
-              )}
+            <div className="w-10 h-10 rounded-xl overflow-hidden bg-white/10 border border-white/10 flex-shrink-0 flex items-center justify-center">
+              <Sparkles className="w-5 h-5 text-white/90" />
             </div>
-            <div>
-              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Pacific Athletic Club</p>
-              <h3 className="text-sm font-bold text-white leading-tight">{race.name}</h3>
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-wider truncate" style={{ color: preset.labelHex }}>
+                {orgName}
+              </p>
+              <h3 className="text-sm font-bold text-white leading-tight truncate">{logoText}</h3>
             </div>
           </div>
 
           {/* Primary Bib Card */}
-          <div className="bg-slate-800/90 rounded-2xl p-4 border border-slate-700/60 mb-3 text-center">
-            <p className="text-[10px] uppercase font-bold text-sky-400 tracking-wider">OFFICIAL BIB NUMBER</p>
-            <p className="text-5xl font-black font-mono tracking-tight text-white my-1">
-              {resolveVal('bib', '1042')}
+          <div className="bg-black/30 rounded-2xl p-4 border border-white/10 mb-3 text-center">
+            <p className="text-[10px] uppercase font-bold tracking-wider" style={{ color: preset.labelHex }}>
+              {primaryField.label}
             </p>
-            <p className="text-xs font-medium text-slate-300">
+            <p className="text-5xl font-black font-mono tracking-tight text-white my-1">
+              {primaryField.value || resolveVal(primaryField.key || 'bib', '1042')}
+            </p>
+            <p className="text-xs font-medium text-white/90">
               {runner.first_name} {runner.last_name}
             </p>
           </div>
 
-          {/* Key Details */}
-          <div className="grid grid-cols-2 gap-2 text-xs bg-slate-800/50 p-3 rounded-2xl border border-slate-800 mb-3">
+          {/* Details (HeaderField & Secondary Fields) */}
+          <div className="grid grid-cols-2 gap-2 text-xs bg-black/20 p-3 rounded-2xl border border-white/10 mb-3">
             <div>
-              <p className="text-[9px] uppercase font-bold text-slate-400">Division</p>
-              <p className="font-semibold text-white truncate">{resolveVal('category', 'Full Marathon')}</p>
+              <p className="text-[9px] uppercase font-bold" style={{ color: preset.labelHex }}>
+                {headerField.label}
+              </p>
+              <p className="font-semibold text-white truncate">
+                {headerField.value || resolveVal(headerField.key || 'wave', 'Wave A')}
+              </p>
             </div>
-            <div>
-              <p className="text-[9px] uppercase font-bold text-slate-400">Start Wave</p>
-              <p className="font-semibold text-white truncate">{resolveVal('wave', 'Wave A')}</p>
-            </div>
-            <div className="mt-1">
-              <p className="text-[9px] uppercase font-bold text-slate-400">Corral</p>
-              <p className="font-semibold text-white truncate">{resolveVal('corral', 'Gate 1')}</p>
-            </div>
-            <div className="mt-1">
-              <p className="text-[9px] uppercase font-bold text-slate-400">Target Pace</p>
-              <p className="font-semibold text-white truncate">{resolveVal('expected_pace', '4:15 min/km')}</p>
-            </div>
+            {secondaryFields.slice(0, 1).map((f: any, i: number) => (
+              <div key={i}>
+                <p className="text-[9px] uppercase font-bold" style={{ color: preset.labelHex }}>
+                  {f.label}
+                </p>
+                <p className="font-semibold text-white truncate">
+                  {f.key === 'runner_name' ? `${runner.first_name} ${runner.last_name}` : (f.value || resolveVal(f.key || 'category', '-'))}
+                </p>
+              </div>
+            ))}
+            {secondaryFields.length > 1 && (
+              <div className="col-span-2 pt-1 border-t border-white/10">
+                <p className="text-[9px] uppercase font-bold" style={{ color: preset.labelHex }}>
+                  {secondaryFields[1].label}
+                </p>
+                <p className="font-semibold text-white truncate">
+                  {secondaryFields[1].value || resolveVal(secondaryFields[1].key || 'category', '-')}
+                </p>
+              </div>
+            )}
           </div>
 
-          {/* QR Code */}
+          {/* QR Code Barcode */}
           <div className="bg-white rounded-2xl p-3 flex flex-col items-center">
-            <QrCode className="w-28 h-28 text-slate-900" strokeWidth={1.5} />
-            <p className="text-[9px] font-mono text-slate-600 mt-1 uppercase font-semibold">
-              BIB #{resolveVal('bib', '1042')} • {runner.first_name} {runner.last_name}
+            {barcodeFormat === 'Code128' ? (
+              <div className="w-full h-16 flex items-center justify-center text-slate-900">
+                <Barcode className="w-full h-full" />
+              </div>
+            ) : (
+              <QrCode className="w-24 h-24 sm:w-28 sm:h-28 text-slate-900" strokeWidth={1.6} />
+            )}
+            <p className="text-[9px] font-mono text-slate-700 mt-1.5 uppercase font-semibold text-center max-w-[240px] truncate">
+              {barcodeAltText}
             </p>
           </div>
         </div>
 
-        <div className="p-3 bg-slate-950/60 border-t border-slate-800/80 text-center">
-          <p className="text-[10px] text-slate-400 flex items-center justify-center gap-1">
-            <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Connected to Google Pay Services
+        <div className="p-3 bg-black/30 border-t border-white/10 text-center">
+          <p className="text-[10px] text-white/70 flex items-center justify-center gap-1">
+            <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Connected to Google Wallet Pay Services
           </p>
         </div>
       </div>

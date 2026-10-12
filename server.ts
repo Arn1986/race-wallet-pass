@@ -93,10 +93,15 @@ function normalizeWalletWalletUrl(rawUrl?: string): string {
   return url || 'https://api.walletwallet.dev';
 }
 
-// Derive WalletWallet colorPreset for Free Tier (Non-Pro) from hex
-function deriveColorPreset(hexColor?: string): 'dark' | 'blue' | 'green' | 'red' | 'purple' | 'orange' {
-  if (!hexColor || !hexColor.startsWith('#')) return 'dark';
-  const hex = hexColor.replace('#', '');
+// Derive WalletWallet colorPreset for Free Tier (Non-Pro) from hex or preset name
+function deriveColorPreset(hexOrPreset?: string): 'dark' | 'blue' | 'green' | 'red' | 'purple' | 'orange' {
+  if (!hexOrPreset) return 'dark';
+  const val = hexOrPreset.toLowerCase().trim();
+  if (['dark', 'blue', 'green', 'red', 'purple', 'orange'].includes(val)) {
+    return val as any;
+  }
+  if (!val.startsWith('#')) return 'dark';
+  const hex = val.replace('#', '');
   if (hex.length !== 6 && hex.length !== 3) return 'dark';
   const r = parseInt(hex.length === 3 ? hex[0] + hex[0] : hex.slice(0, 2), 16);
   const g = parseInt(hex.length === 3 ? hex[1] + hex[1] : hex.slice(2, 4), 16);
@@ -129,6 +134,7 @@ async function createWalletWalletPassServer(options: {
     background_color?: string;
     text_color?: string;
     label_color?: string;
+    schema_definition?: string;
     logo_image_url?: string;
     strip_image_url?: string;
   };
@@ -158,51 +164,50 @@ async function createWalletWalletPassServer(options: {
   const wave = String(dyn.wave || dyn.start_wave || 'Open');
   const emergency = String(dyn.emergency_contact || 'None listed');
 
-  const baseEndpoint = normalizeWalletWalletUrl(baseUrl);
+  let tplSchema: any = {};
+  if (template?.schema_definition) {
+    try { tplSchema = JSON.parse(template.schema_definition); } catch {}
+  }
 
-  // Common fields (accepted in ALL tiers, including Free)
+  const baseEndpoint = normalizeWalletWalletUrl(baseUrl);
+  const chosenColorPreset = tplSchema.colorPreset || deriveColorPreset(template?.background_color) || 'dark';
+
+  // Common fields (accepted in ALL tiers, strictly per walletwallet.dev docs)
   const body: any = {
     barcodeValue: bibNumber,
-    barcodeFormat: 'QR',
-    barcodeAltText: `BIB #${bibNumber}`,
-    logoText: (raceName || 'Athletic Pass').slice(0, 64),
-    description: `${raceName} Participant Pass`.slice(0, 128),
-    organizationName: (orgName || 'Pacific Athletic Series').slice(0, 64),
-    sharingProhibited: false,
+    barcodeFormat: tplSchema.barcodeFormat || 'QR',
+    barcodeAltText: tplSchema.barcodeAltText
+      ? tplSchema.barcodeAltText.replace('{{bib}}', bibNumber)
+      : `BIB #${bibNumber}`,
+    logoText: (tplSchema.logoText || raceName || 'Athletic Pass').slice(0, 64),
+    description: (tplSchema.description || `${raceName} Participant Pass`).slice(0, 128),
+    organizationName: (tplSchema.organizationName || orgName || '3F Striders').slice(0, 64),
+    sharingProhibited: tplSchema.sharingProhibited !== undefined ? Boolean(tplSchema.sharingProhibited) : false,
+    colorPreset: chosenColorPreset,
     primaryFields: [
-      { label: 'BIB NUMBER', value: bibNumber },
+      { label: tplSchema.primaryFields?.[0]?.label || 'BIB NUMBER', value: bibNumber },
     ],
     secondaryFields: [
-      { label: 'PARTICIPANT', value: `${runner.first_name} ${runner.last_name}`.slice(0, 64) },
-      { label: 'DIVISION', value: division.slice(0, 64) },
+      { label: tplSchema.secondaryFields?.[0]?.label || 'PARTICIPANT', value: `${runner.first_name} ${runner.last_name}`.slice(0, 64) },
+      { label: tplSchema.secondaryFields?.[1]?.label || 'DIVISION', value: division.slice(0, 64) },
     ],
     headerFields: [
-      { label: 'WAVE', value: wave.slice(0, 64) },
+      { label: tplSchema.headerFields?.[0]?.label || 'WAVE', value: wave.slice(0, 64) },
     ],
-    backFields: [
-      { label: 'Emergency Contact', value: emergency.slice(0, 256) },
-      { label: 'Runner Email', value: runner.email.slice(0, 128) },
-      { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
-    ],
+    backFields: (tplSchema.backFields && Array.isArray(tplSchema.backFields) && tplSchema.backFields.length > 0)
+      ? tplSchema.backFields.map((f: any) => ({
+          label: f.label || 'Information',
+          value: f.value || (f.key === 'email' ? runner.email : f.key === 'emergency_contact' ? emergency : 'Present pass at check-in.'),
+        }))
+      : [
+          { label: 'Emergency Contact', value: emergency.slice(0, 256) },
+          { label: 'Runner Email', value: runner.email.slice(0, 128) },
+          { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
+        ],
   };
 
-  if (plan === 'free') {
-    // Non-Pro Free Tier per walletwallet.dev/docs:
-    // Explicitly use colorPreset and omit Pro-only fields (color, logoURL, stripURL)
-    body.colorPreset = deriveColorPreset(template?.background_color);
-  } else {
-    // Pro Tier:
-    if (template?.background_color && template.background_color.startsWith('#')) {
-      body.color = template.background_color;
-    } else {
-      body.colorPreset = deriveColorPreset(template?.background_color);
-    }
-    if (template?.logo_image_url && template.logo_image_url.startsWith('https://')) {
-      body.logoURL = template.logo_image_url;
-    }
-    if (template?.strip_image_url && template.strip_image_url.startsWith('https://')) {
-      body.stripURL = template.strip_image_url;
-    }
+  if (plan === 'pro' && template?.background_color && template.background_color.startsWith('#')) {
+    body.color = template.background_color;
   }
 
   const cleanApiKey = apiKey.trim().replace(/^Bearer\s+/i, '');

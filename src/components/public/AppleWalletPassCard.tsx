@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Runner, PassTemplate, Race, Pass } from '../../types/index.ts';
-import { QrCode, RotateCw, ShieldAlert, Sparkles, CheckCircle2, AlertTriangle, Info } from 'lucide-react';
+import { Runner, PassTemplate, Race, Pass, getWalletColorPreset } from '../../types/index.ts';
+import { QrCode, RotateCw, ShieldAlert, Sparkles, CheckCircle2, AlertTriangle, Info, Barcode } from 'lucide-react';
 
 interface AppleWalletPassCardProps {
   runner: Runner;
@@ -53,34 +53,47 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
     const mapped = fieldMapping[fieldKey] || fieldKey;
     if (dynamicData[mapped] !== undefined && dynamicData[mapped] !== '') return String(dynamicData[mapped]);
     if (dynamicData[fieldKey] !== undefined && dynamicData[fieldKey] !== '') return String(dynamicData[fieldKey]);
-    if (fieldKey === 'bib') return dynamicData.bib_number || dynamicData.bib || '1042';
-    if (fieldKey === 'category') return dynamicData.race_division || dynamicData.category || 'Marathon 42K';
-    if (fieldKey === 'wave') return dynamicData.start_wave || dynamicData.wave || 'Wave A';
+    if (fieldKey === 'bib' || fieldKey === 'bib_number') return dynamicData.bib_number || dynamicData.bib || '1042';
+    if (fieldKey === 'category' || fieldKey === 'division') return dynamicData.race_division || dynamicData.category || dynamicData.division || 'Full Marathon (42.2K)';
+    if (fieldKey === 'wave' || fieldKey === 'start_wave') return dynamicData.start_wave || dynamicData.wave || 'Wave A';
+    if (fieldKey === 'runner_name') return `${runner.first_name} ${runner.last_name}`;
+    if (fieldKey === 'email') return runner.email;
     return fallback;
   };
 
   const isRevoked = pass?.status === 'revoked';
 
-  const primaryFields = schema.primaryFields || [{ key: 'bib', label: 'BIB NUMBER' }];
-  const secondaryFields = schema.secondaryFields || [
-    { key: 'category', label: 'CATEGORY' },
-    { key: 'wave', label: 'START WAVE' },
-  ];
-  const auxiliaryFields = schema.auxiliaryFields || [
-    { key: 'corral', label: 'CORRAL GATE' },
-    { key: 'expected_pace', label: 'TARGET PACE' },
-    { key: 'tshirt_size', label: 'SHIRT' },
-  ];
-  const backFields = schema.backFields || [
-    { key: 'emergency_contact', label: 'Emergency Contact' },
-    { key: 'medical_notes', label: 'Medical Notes' },
-    { key: 'bag_drop_zone', label: 'Bag Drop Zone' },
-    { key: 'race_rules', label: 'Official Rules' },
-  ];
+  // Derive WalletWallet Color Preset styling
+  const chosenPresetKey = schema.colorPreset || template.background_color;
+  const preset = getWalletColorPreset(chosenPresetKey);
 
-  const bgColor = template.background_color || '#0f172a';
-  const textColor = template.text_color || '#ffffff';
-  const labelColor = template.label_color || '#38bdf8';
+  // WalletWallet standard fields
+  const logoText = (schema.logoText || race.name || template.name || 'Athletic Event').slice(0, 64);
+  const orgName = (schema.organizationName || '3F Striders').slice(0, 64);
+
+  const headerField = schema.headerFields?.[0] || { label: 'WAVE', key: 'wave' };
+  const primaryField = schema.primaryFields?.[0] || { label: 'BIB NUMBER', key: 'bib' };
+  
+  const secondaryFields = (schema.secondaryFields && schema.secondaryFields.length > 0)
+    ? schema.secondaryFields
+    : [
+        { label: 'PARTICIPANT', key: 'runner_name' },
+        { label: 'DIVISION', key: 'category' },
+      ];
+
+  const backFields = (schema.backFields && schema.backFields.length > 0)
+    ? schema.backFields
+    : [
+        { label: 'Emergency Contact', key: 'emergency_contact', value: resolveVal('emergency_contact', 'Maria Caisip (+1 415-555-0199)') },
+        { label: 'Runner Email', key: 'email', value: runner.email },
+        { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
+      ];
+
+  const barcodeFormat = schema.barcodeFormat || 'QR';
+  const bibValue = resolveVal('bib', '1042');
+  const barcodeAltText = schema.barcodeAltText
+    ? schema.barcodeAltText.replace('{{bib}}', bibValue)
+    : `BIB #${bibValue} • ${runner.first_name} ${runner.last_name}`;
 
   return (
     <div
@@ -92,47 +105,54 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
         className={`relative w-full transition-transform duration-700 transform-style-3d ${
           flipped ? 'rotate-y-180' : ''
         }`}
-        style={{ minHeight: '520px' }}
+        style={{ minHeight: '480px' }}
       >
-        {/* ================= CARD FRONT ================= */}
+        {/* ================= CARD FRONT (WalletWallet Apple Wallet Exact Spec) ================= */}
         <div
           className={`absolute inset-0 backface-hidden rounded-[26px] shadow-2xl overflow-hidden flex flex-col border ${
             isRevoked ? 'border-red-500/50 grayscale-[0.6]' : 'border-white/10'
           }`}
           style={{
-            backgroundColor: bgColor,
-            color: textColor,
+            backgroundColor: preset.bgHex,
+            color: preset.textHex,
             boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08)',
           }}
         >
-          {/* Top Notch / Apple Wallet Header */}
-          <div className="px-5 pt-4 pb-3 flex items-center justify-between border-b border-white/5 relative z-10">
-            <div className="flex items-center space-x-2.5 overflow-hidden">
-              <div className="w-8 h-8 rounded-lg overflow-hidden bg-white/10 flex-shrink-0 flex items-center justify-center p-0.5 border border-white/10">
-                {template.logo_image_url ? (
-                  <img src={template.logo_image_url} alt="Logo" className="w-full h-full object-cover rounded-md" />
-                ) : (
-                  <Sparkles className="w-4 h-4 text-white/80" />
-                )}
+          {/* Top Header Bar: LogoText (Left) + HeaderField (Right) */}
+          <div className="px-5 pt-4 pb-3 flex items-start justify-between border-b border-white/10 relative z-10">
+            <div className="flex items-center space-x-2.5 overflow-hidden pr-2">
+              <div className="w-7 h-7 rounded-lg overflow-hidden bg-white/10 flex-shrink-0 flex items-center justify-center p-1 border border-white/10">
+                <Sparkles className="w-3.5 h-3.5 text-white/90" />
               </div>
               <div className="min-w-0">
-                <p className="text-[10px] uppercase font-semibold tracking-wider opacity-75 truncate" style={{ color: labelColor }}>
-                  PACIFIC ATHLETIC CLUB
+                <p className="text-[10px] uppercase font-bold tracking-wider truncate" style={{ color: preset.labelHex }}>
+                  {orgName}
                 </p>
-                <h4 className="text-xs font-bold truncate leading-tight">{race.name}</h4>
+                <h4 className="text-xs font-bold truncate leading-tight">{logoText}</h4>
               </div>
             </div>
 
-            {interactive && (
-              <button
-                type="button"
-                onClick={toggleFlip}
-                className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 flex items-center justify-center text-white/70 hover:text-white transition-all cursor-pointer"
-                title="Flip to pass back details"
-              >
-                <Info className="w-4 h-4" />
-              </button>
-            )}
+            <div className="flex items-center space-x-2 flex-shrink-0 text-right">
+              <div>
+                <p className="text-[9px] uppercase font-bold tracking-wider" style={{ color: preset.labelHex }}>
+                  {headerField.label}
+                </p>
+                <p className="text-xs font-bold leading-tight">
+                  {headerField.value || resolveVal(headerField.key || 'wave', 'Wave A')}
+                </p>
+              </div>
+
+              {interactive && (
+                <button
+                  type="button"
+                  onClick={toggleFlip}
+                  className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 flex items-center justify-center text-white/70 hover:text-white transition-all cursor-pointer ml-1"
+                  title="Flip to pass back details"
+                >
+                  <Info className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Revoked Banner */}
@@ -142,93 +162,65 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
             </div>
           )}
 
-          {/* Strip Image Banner */}
-          <div className="relative h-28 w-full overflow-hidden bg-slate-800 flex-shrink-0">
-            {template.strip_image_url ? (
-              <img
-                src={template.strip_image_url}
-                alt="Banner"
-                className="w-full h-full object-cover brightness-95"
-              />
-            ) : (
-              <div className="w-full h-full bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-800 flex items-center justify-center">
-                <span className="text-white/40 font-mono text-xs">OFFICIAL PARTICIPANT PASS</span>
-              </div>
-            )}
-            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
-            <div className="absolute bottom-2 left-4 right-4 flex items-end justify-between">
-              <span className="text-[11px] font-medium text-white/90 drop-shadow-md">
-                {runner.first_name} {runner.last_name}
-              </span>
-              <span className="text-[10px] font-mono uppercase bg-black/40 px-2 py-0.5 rounded backdrop-blur-md text-white/80">
-                {pass?.status === 'issued' ? 'VERIFIED' : pass?.status}
-              </span>
+          {/* Primary Field (Hero Bib Number) */}
+          <div className="px-5 pt-6 pb-4 text-center">
+            <p className="text-[10px] uppercase font-extrabold tracking-widest opacity-85" style={{ color: preset.labelHex }}>
+              {primaryField.label}
+            </p>
+            <p className="text-5xl sm:text-6xl font-black tracking-tight leading-none font-mono my-2 drop-shadow">
+              {primaryField.value || resolveVal(primaryField.key || 'bib', '1042')}
+            </p>
+            <span className="inline-block text-[10px] font-mono uppercase bg-black/30 px-2.5 py-0.5 rounded-full border border-white/10 text-white/80">
+              {pass?.status === 'issued' ? 'Official Wallet Pass' : 'Ready to Install'}
+            </span>
+          </div>
+
+          {/* Secondary Fields (2 columns: Participant & Division) */}
+          <div className="px-5 py-3 grid grid-cols-2 gap-3 border-t border-b border-white/10 bg-black/10">
+            {secondaryFields.slice(0, 2).map((field: any, idx: number) => {
+              const val = field.key === 'runner_name'
+                ? `${runner.first_name} ${runner.last_name}`
+                : (field.value || resolveVal(field.key || 'category', '-'));
+              return (
+                <div key={idx} className={idx === 1 ? 'text-right' : 'text-left'}>
+                  <p className="text-[9px] uppercase font-bold tracking-wider truncate" style={{ color: preset.labelHex }}>
+                    {field.label}
+                  </p>
+                  <p className="text-sm font-semibold truncate leading-tight mt-0.5">
+                    {val}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Barcode Section (WalletWallet Official Spec: Centered on Clean White Card) */}
+          <div className="mt-auto px-5 pt-4 pb-4 bg-black/20 flex flex-col items-center justify-center border-t border-white/10">
+            <div className="bg-white p-3 rounded-2xl shadow-lg flex flex-col items-center max-w-[200px] w-full">
+              {barcodeFormat === 'Code128' ? (
+                <div className="w-full h-16 flex items-center justify-center text-slate-900">
+                  <Barcode className="w-full h-full" />
+                </div>
+              ) : (
+                <div className="w-24 h-24 sm:w-28 sm:h-28 relative flex items-center justify-center">
+                  <QrCode className="w-full h-full text-slate-900" strokeWidth={1.6} />
+                </div>
+              )}
             </div>
-          </div>
-
-          {/* Primary Fields (Hero Bib) */}
-          <div className="px-5 pt-3 pb-2 text-center border-b border-white/5">
-            {primaryFields.map((field: any, idx: number) => (
-              <div key={idx} className="my-0.5">
-                <p className="text-[10px] uppercase font-bold tracking-widest opacity-80" style={{ color: labelColor }}>
-                  {field.label}
-                </p>
-                <p className="text-4xl sm:text-5xl font-black tracking-tight leading-none font-mono my-1 drop-shadow">
-                  {resolveVal(field.key, '1042')}
-                </p>
-              </div>
-            ))}
-          </div>
-
-          {/* Secondary Fields (Category & Wave) */}
-          <div className="px-5 py-2.5 grid grid-cols-2 gap-2 border-b border-white/5">
-            {secondaryFields.map((field: any, idx: number) => (
-              <div key={idx} className={field.alignment === 'right' ? 'text-right' : 'text-left'}>
-                <p className="text-[9px] uppercase font-bold tracking-wider opacity-80 truncate" style={{ color: labelColor }}>
-                  {field.label}
-                </p>
-                <p className="text-sm font-semibold truncate leading-tight">
-                  {resolveVal(field.key, '-')}
-                </p>
-              </div>
-            ))}
-          </div>
-
-          {/* Auxiliary Fields (Corral, Pace, Shirt) */}
-          <div className="px-5 py-2 grid grid-cols-3 gap-1 border-b border-white/5">
-            {auxiliaryFields.map((field: any, idx: number) => (
-              <div key={idx} className={idx === 1 ? 'text-center' : idx === 2 ? 'text-right' : 'text-left'}>
-                <p className="text-[9px] uppercase font-bold tracking-wider opacity-80 truncate" style={{ color: labelColor }}>
-                  {field.label}
-                </p>
-                <p className="text-xs font-semibold truncate">
-                  {field.key === 'runner_name' ? `${runner.first_name} ${runner.last_name}` : resolveVal(field.key, '-')}
-                </p>
-              </div>
-            ))}
-          </div>
-
-          {/* Barcode & Apple Wallet Bottom Section */}
-          <div className="mt-auto px-5 pt-3 pb-4 bg-white/5 flex flex-col items-center justify-center">
-            <div className="bg-white p-2.5 rounded-xl shadow-inner flex flex-col items-center">
-              <div className="w-28 h-28 relative flex items-center justify-center">
-                <QrCode className="w-full h-full text-slate-900" strokeWidth={1.5} />
-              </div>
-            </div>
-            <p className="text-[9px] font-mono uppercase tracking-wider mt-2 opacity-70 text-center max-w-[240px] truncate" style={{ color: labelColor }}>
-              {schema.barcodeAltText || `BIB #${resolveVal('bib', '1042')} • ${runner.first_name} ${runner.last_name}`}
+            <p className="text-[10px] font-mono uppercase tracking-wider mt-2.5 opacity-80 text-center max-w-[260px] truncate" style={{ color: preset.labelHex }}>
+              {barcodeAltText}
             </p>
           </div>
         </div>
 
-        {/* ================= CARD BACK ================= */}
+        {/* ================= CARD BACK (WalletWallet Back Fields Spec) ================= */}
         <div
           className={`absolute inset-0 backface-hidden rotate-y-180 rounded-[26px] shadow-2xl overflow-hidden flex flex-col border border-white/10 ${
             isRevoked ? 'grayscale-[0.6]' : ''
           }`}
           style={{
-            backgroundColor: bgColor,
-            color: textColor,
+            backgroundColor: preset.bgHex,
+            color: preset.textHex,
             boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.45)',
           }}
         >
@@ -236,7 +228,7 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
           <div className="px-5 py-3.5 flex items-center justify-between border-b border-white/10">
             <div className="flex items-center space-x-2">
               <ShieldAlert className="w-4 h-4 text-sky-400" />
-              <h4 className="text-xs font-bold uppercase tracking-wider">Pass Details & Instructions</h4>
+              <h4 className="text-xs font-bold uppercase tracking-wider">Pass Details & Information</h4>
             </div>
             {interactive && (
               <button
@@ -251,57 +243,62 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
           </div>
 
           {/* Back Body Content */}
-          <div className="p-5 flex-1 overflow-y-auto space-y-4 text-left text-xs">
+          <div className="p-5 flex-1 overflow-y-auto space-y-3.5 text-left text-xs">
+            {/* Event Summary */}
             <div className="p-3 rounded-xl bg-white/5 border border-white/10">
-              <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: labelColor }}>
-                Event Location & Time
+              <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: preset.labelHex }}>
+                Event Location & Date
               </p>
-              <p className="font-semibold text-white/95">{race.location}</p>
+              <p className="font-semibold text-white/95">{race.location || 'San Francisco, CA'}</p>
               <p className="text-[11px] text-white/70">
                 {new Date(race.event_date).toLocaleDateString('en-US', {
-                  weekday: 'long',
+                  weekday: 'short',
                   year: 'numeric',
-                  month: 'long',
+                  month: 'short',
                   day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
                 })}
               </p>
             </div>
 
-            {backFields.map((field: any, idx: number) => (
-              <div key={idx} className="border-b border-white/5 pb-2">
-                <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: labelColor }}>
-                  {field.label}
-                </p>
-                <p className="text-xs text-white/85 mt-0.5 leading-relaxed">
-                  {resolveVal(field.key, 'Contact event staff at information booth.')}
-                </p>
-              </div>
-            ))}
+            {/* Configured WalletWallet Back Fields */}
+            {backFields.map((field: any, idx: number) => {
+              const val = field.value || resolveVal(field.key, 'Contact organizer staff.');
+              return (
+                <div key={idx} className="border-b border-white/10 pb-2.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: preset.labelHex }}>
+                    {field.label}
+                  </p>
+                  <p className="text-xs text-white/90 mt-0.5 leading-relaxed break-words">
+                    {val}
+                  </p>
+                </div>
+              );
+            })}
 
-            <div className="border-b border-white/5 pb-2">
-              <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: labelColor }}>
-                Pass Serial Identifier
+            {/* Wallet Serial Number */}
+            <div className="border-b border-white/10 pb-2.5">
+              <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: preset.labelHex }}>
+                Pass Serial Number
               </p>
-              <p className="font-mono text-[10px] text-white/60 break-all">
+              <p className="font-mono text-[10px] text-white/70 break-all">
                 {pass?.walletwallet_pass_id || pass?.id || runner.id}
               </p>
             </div>
 
+            {/* Wallet Notification Notice */}
             <div className="p-3 rounded-lg bg-emerald-950/40 border border-emerald-500/20 text-[11px] text-emerald-300">
               <div className="flex items-center gap-1.5 font-semibold mb-0.5">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Automatic Lock Screen Updates
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Live Lock Screen Updates
               </div>
               <p className="text-[10px] opacity-80 leading-normal">
-                Organizers send live wave alerts, weather updates, and corral timing directly to this pass via APNs and FCM push notifications.
+                Organizers push wave alerts, pace adjustments, and emergency notifications directly to this pass via WalletWallet APNs.
               </p>
             </div>
           </div>
 
-          <div className="p-3 bg-white/5 border-t border-white/5 text-center">
+          <div className="p-3 bg-black/20 border-t border-white/10 text-center">
             <p className="text-[10px] text-white/50">
-              Pacific Athletic Club • Powered by Cloudflare D1 & R2
+              {orgName} • Powered by WalletWallet API
             </p>
           </div>
         </div>

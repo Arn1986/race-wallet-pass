@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AppleWalletPassCard } from './AppleWalletPassCard.tsx';
 import { GoogleWalletPassCard } from './GoogleWalletPassCard.tsx';
 import { Runner, Race, PassTemplate, Pass } from '../../types/index.ts';
-import { Download, Share2, ArrowLeft, Check, BellRing, Sparkles, RefreshCw, AlertCircle, Smartphone, ExternalLink } from 'lucide-react';
+import { Download, Share2, ArrowLeft, Check, BellRing, Sparkles, RefreshCw, AlertCircle, Smartphone, ExternalLink, QrCode, ShieldCheck } from 'lucide-react';
 
 interface PassLandingPageProps {
   runnerId: string;
@@ -234,6 +234,15 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
   const { runner, race, template, pass } = data;
   const isRevoked = pass.status === 'revoked';
 
+  let templateSchema: any = {};
+  try {
+    templateSchema = JSON.parse(template.schema_definition || '{}');
+  } catch {
+    templateSchema = {};
+  }
+  const passTitle = templateSchema.logoText || race.name;
+  const orgName = templateSchema.organizationName || '3F Striders';
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-white pb-16">
       {/* Top Simulated iOS Push Notification Banner */}
@@ -300,6 +309,8 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
         {/* Event Header Banner */}
         <div className="text-center mb-6">
           <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700 text-[11px] font-semibold text-slate-300 mb-2">
+            <span>{orgName}</span>
+            <span>•</span>
             <span>{race.location}</span>
             <span>•</span>
             <span>
@@ -311,7 +322,7 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
             </span>
           </div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-            {race.name}
+            {passTitle}
           </h1>
           <p className="text-sm text-slate-400 mt-1">
             Participant Digital Badge for{' '}
@@ -389,6 +400,14 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
 
         {/* Official "Add to Wallet" Action Buttons */}
         <div className="max-w-sm mx-auto space-y-3 mb-8">
+          {/* Wallet Status Badge */}
+          {pass.walletwallet_pass_id && (
+            <div className="flex items-center justify-center space-x-1.5 py-1.5 px-3 rounded-full bg-emerald-950/60 border border-emerald-500/30 text-emerald-300 text-[11px] font-semibold text-center mb-1">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+              <span className="truncate">Wallet Pass Active • Serial: {pass.walletwallet_pass_id}</span>
+            </div>
+          )}
+
           {/* Apple Wallet Official Button */}
           <button
             onClick={handleDownloadApplePass}
@@ -478,6 +497,20 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
           )}
+
+          {/* Desktop QR Scan Card (WalletWallet device-aware phone install feature) */}
+          <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-2 mt-2">
+            <div className="flex items-center justify-center space-x-1.5 text-xs font-semibold text-slate-200">
+              <QrCode className="w-3.5 h-3.5 text-sky-400" />
+              <span>Install to Phone via Camera</span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-normal max-w-xs mx-auto">
+              Scan with your iPhone or Android camera to immediately add this pass to your native mobile wallet.
+            </p>
+            <div className="inline-block p-2 bg-white rounded-xl shadow-md my-1">
+              <QrCode className="w-24 h-24 text-slate-900" />
+            </div>
+          </div>
         </div>
 
         {/* Live APNs / Push Notification Test Console (For Organizers and Runners) */}

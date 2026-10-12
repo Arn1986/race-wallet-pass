@@ -76,33 +76,30 @@ class D1DatabaseEmulator {
       id: template1Id,
       org_id: orgId,
       name: 'Marathon VIP Digital Pass',
-      background_color: '#0f172a', // Slate 900
+      background_color: '#18181b', // Dark preset
       text_color: '#ffffff',
-      label_color: '#38bdf8', // Sky 400
-      logo_image_url: assets[0].url,
-      strip_image_url: assets[1].url,
+      label_color: '#a1a1aa',
+      logo_image_url: '',
+      strip_image_url: '',
       schema_definition: JSON.stringify({
-        passType: 'eventTicket',
-        primaryFields: [
-          { key: 'bib', label: 'BIB NUMBER', alignment: 'center', changeMessage: 'Bib assigned: %@' }
-        ],
+        organizationName: '3F Striders',
+        logoText: 'Golden Gate Marathon 2026',
+        description: 'Official Participant Digital Pass',
+        colorPreset: 'dark',
+        barcodeFormat: 'QR',
+        barcodeAltText: 'BIB #{{bib}}',
+        headerFields: [{ label: 'WAVE', key: 'wave' }],
+        primaryFields: [{ label: 'BIB NUMBER', key: 'bib' }],
         secondaryFields: [
-          { key: 'category', label: 'CATEGORY', alignment: 'left' },
-          { key: 'wave', label: 'START WAVE', alignment: 'right', changeMessage: 'Start Wave updated to: %@' }
-        ],
-        auxiliaryFields: [
-          { key: 'corral', label: 'CORRAL GATE', alignment: 'left' },
-          { key: 'expected_pace', label: 'TARGET PACE', alignment: 'center' },
-          { key: 'tshirt_size', label: 'SHIRT SIZE', alignment: 'right' }
+          { label: 'PARTICIPANT', key: 'runner_name' },
+          { label: 'DIVISION', key: 'category' }
         ],
         backFields: [
-          { key: 'emergency_contact', label: 'Emergency Contact' },
-          { key: 'medical_notes', label: 'Medical Information / Allergies' },
-          { key: 'bag_drop_zone', label: 'Bag Drop Zone' },
-          { key: 'race_rules', label: 'Official Rules & Timing Chips' }
+          { label: 'Emergency Contact', key: 'emergency_contact', value: 'Maria Caisip (+1 415-555-0199)' },
+          { label: 'Runner Email', key: 'email', value: 'arnoldcaisip@gmail.com' },
+          { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' }
         ],
-        barcodeType: 'PKBarcodeFormatQR',
-        barcodeAltText: 'SCAN AT START LINE CHUTE & FINISH VILLAGE'
+        sharingProhibited: false
       }),
       created_at: new Date('2026-01-20T09:00:00Z').toISOString(),
     };
@@ -113,29 +110,30 @@ class D1DatabaseEmulator {
       id: template2Id,
       org_id: orgId,
       name: 'Sierra Trail 50K Badge',
-      background_color: '#064e3b', // Emerald 900
-      text_color: '#ecfdf5',
-      label_color: '#34d399',
-      logo_image_url: assets[0].url,
-      strip_image_url: assets[2].url,
+      background_color: '#064e3b', // Green preset
+      text_color: '#ffffff',
+      label_color: '#6ee7b7',
+      logo_image_url: '',
+      strip_image_url: '',
       schema_definition: JSON.stringify({
-        passType: 'eventTicket',
-        primaryFields: [
-          { key: 'bib', label: 'BIB #', alignment: 'center' }
-        ],
+        organizationName: '3F Striders',
+        logoText: 'Sierra Trail 50K Ultra',
+        description: 'Official Endurance Trail Pass',
+        colorPreset: 'green',
+        barcodeFormat: 'QR',
+        barcodeAltText: 'BIB #{{bib}}',
+        headerFields: [{ label: 'WAVE', key: 'wave' }],
+        primaryFields: [{ label: 'BIB #', key: 'bib' }],
         secondaryFields: [
-          { key: 'category', label: 'DIVISION', alignment: 'left' },
-          { key: 'mandatory_gear', label: 'GEAR CHECK', alignment: 'right' }
-        ],
-        auxiliaryFields: [
-          { key: 'aid_station_crew', label: 'CREW ACCESS', alignment: 'left' },
-          { key: 'cutoff_time', label: 'AID 3 CUTOFF', alignment: 'right' }
+          { label: 'PARTICIPANT', key: 'runner_name' },
+          { label: 'DIVISION', key: 'category' }
         ],
         backFields: [
-          { key: 'emergency_contact', label: 'Search & Rescue Emergency Contact' },
-          { key: 'satellite_tracker', label: 'Satellite InReach ID' }
+          { label: 'Emergency Contact', key: 'emergency_contact', value: 'Search & Rescue (+1 530-555-0144)' },
+          { label: 'Mandatory Gear', value: '2L Water, Foil Bivy, Whistle, Headlamp' },
+          { label: 'Aid Station Rules', value: 'Mandatory medical check at Aid Station 3 (Mile 24).' }
         ],
-        barcodeType: 'PKBarcodeFormatQR'
+        sharingProhibited: false
       }),
       created_at: new Date('2026-02-01T11:00:00Z').toISOString(),
     };

@@ -1,8 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { PassTemplate, Runner, Race } from '../../types/index.ts';
+import { 
+  PassTemplate, 
+  Runner, 
+  Race, 
+  WalletColorPreset, 
+  WALLET_COLOR_PRESETS, 
+  getWalletColorPreset,
+  WalletWalletField 
+} from '../../types/index.ts';
 import { AppleWalletPassCard } from '../public/AppleWalletPassCard.tsx';
 import { GoogleWalletPassCard } from '../public/GoogleWalletPassCard.tsx';
-import { Sparkles, Save, Plus, Palette, Image as ImageIcon, Sliders, Smartphone } from 'lucide-react';
+import { 
+  Sparkles, 
+  Save, 
+  Plus, 
+  Palette, 
+  Smartphone, 
+  Code, 
+  Check, 
+  Trash2, 
+  Layers, 
+  QrCode, 
+  Info,
+  ExternalLink,
+  ShieldCheck,
+  RefreshCw
+} from 'lucide-react';
 
 export const TemplatesTab: React.FC = () => {
   const [templates, setTemplates] = useState<PassTemplate[]>([]);
@@ -13,17 +36,43 @@ export const TemplatesTab: React.FC = () => {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isCreatingNew, setIsCreatingNew] = useState(false);
 
-  // Editable Form State
-  const [name, setName] = useState('');
-  const [backgroundColor, setBackgroundColor] = useState('#0f172a');
-  const [textColor, setTextColor] = useState('#ffffff');
-  const [labelColor, setLabelColor] = useState('#38bdf8');
-  const [logoImageUrl, setLogoImageUrl] = useState('');
-  const [stripImageUrl, setStripImageUrl] = useState('');
-  const [barcodeType, setBarcodeType] = useState('PKBarcodeFormatQR');
+  // Active View Tab: 'builder' | 'payload'
+  const [activeViewTab, setActiveViewTab] = useState<'builder' | 'payload'>('builder');
 
-  // Preview Platform
+  // Preview Platform: 'apple' | 'google'
   const [previewPlatform, setPreviewPlatform] = useState<'apple' | 'google'>('apple');
+  const [isFlipped, setIsFlipped] = useState(false);
+
+  // WalletWallet Standard Fields
+  const [name, setName] = useState('Official Race Digital Pass');
+  const [organizationName, setOrganizationName] = useState('3F Striders');
+  const [logoText, setLogoText] = useState('Golden Gate Marathon 2026');
+  const [description, setDescription] = useState('Official 2026 Participant Race Pass');
+  const [colorPreset, setColorPreset] = useState<WalletColorPreset>('dark');
+  const [barcodeFormat, setBarcodeFormat] = useState<'QR' | 'Code128' | 'PDF417' | 'Aztec'>('QR');
+  const [barcodeAltText, setBarcodeAltText] = useState('BIB #{{bib}}');
+
+  // Front fields
+  const [headerLabel, setHeaderLabel] = useState('WAVE');
+  const [headerKey, setHeaderKey] = useState('wave');
+
+  const [primaryLabel, setPrimaryLabel] = useState('BIB NUMBER');
+  const [primaryKey, setPrimaryKey] = useState('bib');
+
+  const [sec1Label, setSec1Label] = useState('PARTICIPANT');
+  const [sec1Key, setSec1Key] = useState('runner_name');
+
+  const [sec2Label, setSec2Label] = useState('DIVISION');
+  const [sec2Key, setSec2Key] = useState('category');
+
+  // Back fields
+  const [backFields, setBackFields] = useState<WalletWalletField[]>([
+    { label: 'Emergency Contact', key: 'emergency_contact', value: 'Maria Caisip (+1 415-555-0199)' },
+    { label: 'Runner Email', key: 'email', value: 'arnoldcaisip@gmail.com' },
+    { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
+  ]);
+
+  const [sharingProhibited, setSharingProhibited] = useState(false);
 
   const fetchTemplates = async () => {
     try {
@@ -47,13 +96,27 @@ export const TemplatesTab: React.FC = () => {
   const handleStartNewTemplate = () => {
     setIsCreatingNew(true);
     setSelectedId('');
-    setName('New Custom Race Pass');
-    setBackgroundColor('#0f172a');
-    setTextColor('#ffffff');
-    setLabelColor('#38bdf8');
-    setLogoImageUrl('https://images.unsplash.com/photo-1552674605-db6ffd4facb5?auto=format&fit=crop&w=400&q=80');
-    setStripImageUrl('https://images.unsplash.com/photo-1502680390469-be75c86b636f?auto=format&fit=crop&w=1200&q=80');
-    setBarcodeType('PKBarcodeFormatQR');
+    setName('New Race Pass');
+    setOrganizationName('3F Striders');
+    setLogoText('Golden Gate Marathon 2026');
+    setDescription('Official Participant Digital Pass');
+    setColorPreset('dark');
+    setBarcodeFormat('QR');
+    setBarcodeAltText('BIB #{{bib}}');
+    setHeaderLabel('WAVE');
+    setHeaderKey('wave');
+    setPrimaryLabel('BIB NUMBER');
+    setPrimaryKey('bib');
+    setSec1Label('PARTICIPANT');
+    setSec1Key('runner_name');
+    setSec2Label('DIVISION');
+    setSec2Key('category');
+    setBackFields([
+      { label: 'Emergency Contact', key: 'emergency_contact', value: 'Maria Caisip (+1 415-555-0199)' },
+      { label: 'Runner Email', key: 'email', value: 'arnoldcaisip@gmail.com' },
+      { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
+    ]);
+    setSharingProhibited(false);
     setSaveError(null);
   };
 
@@ -61,18 +124,54 @@ export const TemplatesTab: React.FC = () => {
     setIsCreatingNew(false);
     setSelectedId(tpl.id);
     setName(tpl.name);
-    setBackgroundColor(tpl.background_color);
-    setTextColor(tpl.text_color);
-    setLabelColor(tpl.label_color);
-    setLogoImageUrl(tpl.logo_image_url || '');
-    setStripImageUrl(tpl.strip_image_url || '');
     setSaveError(null);
 
     try {
       const s = JSON.parse(tpl.schema_definition || '{}');
-      if (s.barcodeType) setBarcodeType(s.barcodeType);
+      if (s.organizationName) setOrganizationName(s.organizationName);
+      if (s.logoText) setLogoText(s.logoText);
+      else setLogoText(tpl.name);
+      if (s.description) setDescription(s.description);
+      
+      // Determine preset: either explicitly from schema or derived from background_color
+      const presetConfig = getWalletColorPreset(s.colorPreset || tpl.background_color);
+      setColorPreset(presetConfig.id);
+
+      if (s.barcodeFormat) setBarcodeFormat(s.barcodeFormat);
+      else if (s.barcodeType === 'PKBarcodeFormatCode128') setBarcodeFormat('Code128');
+      else setBarcodeFormat('QR');
+
+      if (s.barcodeAltText) setBarcodeAltText(s.barcodeAltText);
+
+      if (s.headerFields && s.headerFields.length > 0) {
+        setHeaderLabel(s.headerFields[0].label || 'WAVE');
+        setHeaderKey(s.headerFields[0].key || 'wave');
+      }
+
+      if (s.primaryFields && s.primaryFields.length > 0) {
+        setPrimaryLabel(s.primaryFields[0].label || 'BIB NUMBER');
+        setPrimaryKey(s.primaryFields[0].key || 'bib');
+      }
+
+      if (s.secondaryFields && s.secondaryFields.length > 0) {
+        setSec1Label(s.secondaryFields[0]?.label || 'PARTICIPANT');
+        setSec1Key(s.secondaryFields[0]?.key || 'runner_name');
+        if (s.secondaryFields.length > 1) {
+          setSec2Label(s.secondaryFields[1]?.label || 'DIVISION');
+          setSec2Key(s.secondaryFields[1]?.key || 'category');
+        }
+      }
+
+      if (s.backFields && Array.isArray(s.backFields) && s.backFields.length > 0) {
+        setBackFields(s.backFields);
+      }
+
+      if (s.sharingProhibited !== undefined) {
+        setSharingProhibited(Boolean(s.sharingProhibited));
+      }
     } catch {
-      // ignore
+      // Fallback
+      setColorPreset(getWalletColorPreset(tpl.background_color).id);
     }
   };
 
@@ -87,6 +186,20 @@ export const TemplatesTab: React.FC = () => {
     }
   };
 
+  const handleAddBackField = () => {
+    setBackFields([...backFields, { label: 'Additional Information', value: 'Details' }]);
+  };
+
+  const handleRemoveBackField = (index: number) => {
+    setBackFields(backFields.filter((_, i) => i !== index));
+  };
+
+  const handleUpdateBackField = (index: number, key: 'label' | 'value' | 'key', val: string) => {
+    const updated = [...backFields];
+    updated[index] = { ...updated[index], [key]: val };
+    setBackFields(updated);
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -94,46 +207,37 @@ export const TemplatesTab: React.FC = () => {
       setSaveSuccess(false);
       setSaveError(null);
 
-      const current = templates.find((t) => t.id === selectedId);
-      let schema: any = {};
-      try {
-        schema = JSON.parse(current?.schema_definition || '{}');
-      } catch {
-        schema = {};
-      }
-      schema.barcodeType = barcodeType;
-      if (!schema.primaryFields) {
-        schema.primaryFields = [{ key: 'bib', label: 'BIB NUMBER' }];
-      }
-      if (!schema.secondaryFields) {
-        schema.secondaryFields = [
-          { key: 'category', label: 'CATEGORY' },
-          { key: 'wave', label: 'START WAVE' },
-        ];
-      }
-      if (!schema.auxiliaryFields) {
-        schema.auxiliaryFields = [
-          { key: 'corral', label: 'CORRAL' },
-          { key: 'expected_pace', label: 'TARGET PACE' },
-          { key: 'tshirt_size', label: 'SHIRT' },
-        ];
-      }
-      if (!schema.backFields) {
-        schema.backFields = [
-          { key: 'emergency_contact', label: 'Emergency Contact' },
-          { key: 'medical_notes', label: 'Medical Notes' },
-          { key: 'race_rules', label: 'Rules & Regulations' },
-        ];
-      }
+      const activeColorPreset = WALLET_COLOR_PRESETS[colorPreset];
+
+      const schemaPayload = {
+        organizationName: organizationName.trim().slice(0, 64),
+        logoText: logoText.trim().slice(0, 64),
+        description: description.trim().slice(0, 128),
+        colorPreset,
+        barcodeFormat,
+        barcodeAltText,
+        headerFields: [{ label: headerLabel.trim(), key: headerKey.trim() }],
+        primaryFields: [{ label: primaryLabel.trim(), key: primaryKey.trim() }],
+        secondaryFields: [
+          { label: sec1Label.trim(), key: sec1Key.trim() },
+          { label: sec2Label.trim(), key: sec2Key.trim() },
+        ],
+        backFields: backFields.map((f) => ({
+          label: f.label.trim(),
+          key: f.key ? f.key.trim() : undefined,
+          value: f.value ? f.value.trim() : undefined,
+        })),
+        sharingProhibited,
+      };
 
       const payload = {
-        name,
-        background_color: backgroundColor,
-        text_color: textColor,
-        label_color: labelColor,
-        logo_image_url: logoImageUrl,
-        strip_image_url: stripImageUrl,
-        schema_definition: JSON.stringify(schema),
+        name: name.trim(),
+        background_color: activeColorPreset.bgHex,
+        text_color: activeColorPreset.textHex,
+        label_color: activeColorPreset.labelHex,
+        logo_image_url: '',
+        strip_image_url: '',
+        schema_definition: JSON.stringify(schemaPayload),
       };
 
       const isNew = !selectedId || isCreatingNew;
@@ -155,7 +259,7 @@ export const TemplatesTab: React.FC = () => {
       setIsCreatingNew(false);
       setTimeout(() => setSaveSuccess(false), 4000);
 
-      // Re-fetch templates and select the created/updated one
+      // Re-fetch templates and select the active one
       const refreshedRes = await fetch('/api/templates');
       const refreshedJson: any = await refreshedRes.json();
       if (refreshedJson.success && refreshedJson.data) {
@@ -171,34 +275,33 @@ export const TemplatesTab: React.FC = () => {
     }
   };
 
-  // Sample runner and race for real-time live preview
+  const activePresetConfig = WALLET_COLOR_PRESETS[colorPreset];
+
+  // Dynamic preview template constructed strictly with WalletWallet fields
   const previewTemplate: PassTemplate = {
     id: selectedId || 'preview-tpl',
-    org_id: 'org-pacific-sports-2026',
+    org_id: 'org-3fstriders',
     name,
-    background_color: backgroundColor,
-    text_color: textColor,
-    label_color: labelColor,
-    logo_image_url: logoImageUrl,
-    strip_image_url: stripImageUrl,
+    background_color: activePresetConfig.bgHex,
+    text_color: activePresetConfig.textHex,
+    label_color: activePresetConfig.labelHex,
+    logo_image_url: '',
+    strip_image_url: '',
     schema_definition: JSON.stringify({
-      passType: 'eventTicket',
-      barcodeType,
-      primaryFields: [{ key: 'bib', label: 'BIB NUMBER' }],
+      organizationName,
+      logoText,
+      description,
+      colorPreset,
+      barcodeFormat,
+      barcodeAltText,
+      headerFields: [{ label: headerLabel, key: headerKey }],
+      primaryFields: [{ label: primaryLabel, key: primaryKey }],
       secondaryFields: [
-        { key: 'category', label: 'CATEGORY' },
-        { key: 'wave', label: 'START WAVE' },
+        { label: sec1Label, key: sec1Key },
+        { label: sec2Label, key: sec2Key },
       ],
-      auxiliaryFields: [
-        { key: 'corral', label: 'CORRAL' },
-        { key: 'expected_pace', label: 'TARGET PACE' },
-        { key: 'tshirt_size', label: 'SHIRT' },
-      ],
-      backFields: [
-        { key: 'emergency_contact', label: 'Emergency Contact' },
-        { key: 'medical_notes', label: 'Medical Notes' },
-        { key: 'race_rules', label: 'Rules & Regulations' },
-      ],
+      backFields,
+      sharingProhibited,
     }),
     created_at: new Date().toISOString(),
   };
@@ -210,56 +313,68 @@ export const TemplatesTab: React.FC = () => {
     last_name: 'Caisip',
     email: 'arnoldcaisip@gmail.com',
     dynamic_data: JSON.stringify({
+      bib: '1042',
       bib_number: '1042',
+      category: 'Full Marathon (42.2K)',
       race_division: 'Full Marathon (42.2K)',
+      wave: 'Wave A (06:30 AM)',
       start_wave: 'Wave A (06:30 AM)',
-      corral_letter: 'Chute Red 1',
-      target_pace: '4:15 min/km',
-      tshirt_size: 'Men L',
       emergency_contact: 'Maria Caisip (+1 415-555-0199)',
-      medical_notes: 'None. Penicillin alert.',
     }),
     created_at: new Date().toISOString(),
   };
 
   const previewRace: Race = {
     id: 'race-gg-marathon-2026',
-    org_id: 'org-pacific-sports-2026',
+    org_id: 'org-3fstriders',
     template_id: previewTemplate.id,
-    name: 'Golden Gate Marathon 2026',
+    name: logoText || 'Golden Gate Marathon 2026',
     event_date: '2026-11-15T06:30:00Z',
     location: 'San Francisco, CA',
     field_mapping: JSON.stringify({
-      bib: 'bib_number',
-      category: 'race_division',
-      wave: 'start_wave',
-      corral: 'corral_letter',
-      expected_pace: 'target_pace',
-      tshirt_size: 'tshirt_size',
+      bib: 'bib',
+      category: 'category',
+      wave: 'wave',
       emergency_contact: 'emergency_contact',
-      medical_notes: 'medical_notes',
     }),
     created_at: new Date().toISOString(),
   };
 
-  // Color Swatches
-  const colorPresets = [
-    { label: 'Slate Night', bg: '#0f172a', text: '#ffffff', labelCol: '#38bdf8' },
-    { label: 'Alpine Emerald', bg: '#064e3b', text: '#ecfdf5', labelCol: '#34d399' },
-    { label: 'Midnight Volt', bg: '#18181b', text: '#ffffff', labelCol: '#bef264' },
-    { label: 'Deep Crimson', bg: '#4c0519', text: '#fff1f2', labelCol: '#fb7185' },
-    { label: 'Electric Blue', bg: '#172554', text: '#eff6ff', labelCol: '#60a5fa' },
-    { label: 'Obsidian Black', bg: '#09090b', text: '#fafafa', labelCol: '#a1a1aa' },
-  ];
+  // Build sample WalletWallet API request payload
+  const sampleWalletWalletPayload = {
+    barcodeValue: '1042',
+    barcodeFormat,
+    barcodeAltText: barcodeAltText.replace('{{bib}}', '1042'),
+    logoText,
+    description,
+    organizationName,
+    colorPreset,
+    sharingProhibited,
+    headerFields: [{ label: headerLabel, value: 'Wave A' }],
+    primaryFields: [{ label: primaryLabel, value: '1042' }],
+    secondaryFields: [
+      { label: sec1Label, value: 'Arnold Caisip' },
+      { label: sec2Label, value: 'Full Marathon (42.2K)' },
+    ],
+    backFields: backFields.map((f) => ({
+      label: f.label,
+      value: f.value || (f.key === 'email' ? 'arnoldcaisip@gmail.com' : 'Maria Caisip (+1 415-555-0199)'),
+    })),
+  };
 
   return (
     <div className="space-y-6">
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold text-white">Apple & Google Pass Template Studio</h2>
-          <p className="text-xs text-slate-400">
-            Define colors, R2 graphic banners, schema fields, and inspect real-time wallet simulation.
+          <div className="flex items-center space-x-2">
+            <h2 className="text-xl font-bold text-white tracking-tight">Pass Studio</h2>
+            <span className="px-2.5 py-0.5 rounded-full bg-sky-950 border border-sky-800/80 text-[10px] font-mono font-semibold text-sky-400">
+              walletwallet.dev API Standard
+            </span>
+          </div>
+          <p className="text-xs text-slate-400 mt-1">
+            Configure pass fields and contrast-safe color presets matching WalletWallet specs. Generates official Apple Wallet (.pkpass) and Google Wallet passes.
           </p>
         </div>
 
@@ -271,7 +386,7 @@ export const TemplatesTab: React.FC = () => {
               onClick={() => handleSelectTemplate(tpl.id)}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
                 tpl.id === selectedId && !isCreatingNew
-                  ? 'bg-sky-500 text-slate-950 font-bold shadow'
+                  ? 'bg-sky-500 text-slate-950 font-bold shadow-md shadow-sky-500/20'
                   : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
               }`}
             >
@@ -284,7 +399,7 @@ export const TemplatesTab: React.FC = () => {
             type="button"
             className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5 ${
               isCreatingNew
-                ? 'bg-emerald-500 text-slate-950 shadow'
+                ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
                 : 'bg-slate-900 text-emerald-400 hover:bg-slate-800 border border-emerald-500/30'
             }`}
           >
@@ -298,262 +413,487 @@ export const TemplatesTab: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         {/* Left Column: Form Editor (7 cols) */}
         <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6">
-          <form onSubmit={handleSave} className="space-y-6 text-xs">
-            {/* Creation Mode Indicator or Error Banner */}
-            {isCreatingNew && (
-              <div className="p-3 bg-emerald-950/40 border border-emerald-500/30 rounded-2xl text-emerald-300 flex items-center justify-between text-xs">
-                <span>✨ Creating a brand new pass template. Fill details and click Save below.</span>
-                <button
-                  type="button"
-                  onClick={() => templates.length > 0 && loadTemplateIntoForm(templates[0])}
-                  className="text-[11px] underline text-emerald-400 cursor-pointer"
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
-
-            {saveError && (
-              <div className="p-3 bg-rose-950/60 border border-rose-500/40 rounded-2xl text-rose-300 text-xs">
-                ⚠️ {saveError}
-              </div>
-            )}
-
-            {/* Template Name */}
-            <div>
-              <label className="block uppercase font-bold text-slate-400 mb-1.5">
-                Template Name
-              </label>
-              <input
-                type="text"
-                required
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 text-white font-medium outline-none"
-              />
-            </div>
-
-            {/* Color Theme Selector */}
-            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800/80 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-                  <Palette className="w-3.5 h-3.5 text-sky-400" /> Pass Colors & Branding
-                </span>
-                <span className="text-[10px] text-slate-400 font-mono">Apple RGB Spec</span>
-              </div>
-
-              {/* Presets */}
-              <div className="flex flex-wrap gap-2 pt-1">
-                {colorPresets.map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => {
-                      setBackgroundColor(preset.bg);
-                      setTextColor(preset.text);
-                      setLabelColor(preset.labelCol);
-                    }}
-                    className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-900 cursor-pointer text-[10px] text-slate-300"
-                  >
-                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: preset.bg }} />
-                    <span>{preset.label}</span>
-                  </button>
-                ))}
-              </div>
-
-              {/* Exact Color Pickers */}
-              <div className="grid grid-cols-3 gap-3 pt-2">
-                <div>
-                  <label className="block text-[10px] text-slate-400 uppercase font-semibold mb-1">
-                    Background Color
-                  </label>
-                  <div className="flex items-center space-x-2 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
-                    <input
-                      type="color"
-                      value={backgroundColor}
-                      onChange={(e) => setBackgroundColor(e.target.value)}
-                      className="w-7 h-7 rounded border-none bg-transparent cursor-pointer"
-                    />
-                    <span className="font-mono text-[11px] text-slate-300">{backgroundColor}</span>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] text-slate-400 uppercase font-semibold mb-1">
-                    Text / Value Color
-                  </label>
-                  <div className="flex items-center space-x-2 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
-                    <input
-                      type="color"
-                      value={textColor}
-                      onChange={(e) => setTextColor(e.target.value)}
-                      className="w-7 h-7 rounded border-none bg-transparent cursor-pointer"
-                    />
-                    <span className="font-mono text-[11px] text-slate-300">{textColor}</span>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] text-slate-400 uppercase font-semibold mb-1">
-                    Label Color
-                  </label>
-                  <div className="flex items-center space-x-2 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
-                    <input
-                      type="color"
-                      value={labelColor}
-                      onChange={(e) => setLabelColor(e.target.value)}
-                      className="w-7 h-7 rounded border-none bg-transparent cursor-pointer"
-                    />
-                    <span className="font-mono text-[11px] text-slate-300">{labelColor}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Cloudflare R2 Graphics */}
-            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800/80 space-y-3">
-              <span className="font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-                <ImageIcon className="w-3.5 h-3.5 text-sky-400" /> Cloudflare R2 Pass Media Assets
-              </span>
-
-              <div>
-                <label className="block text-[10px] text-slate-400 uppercase font-semibold mb-1">
-                  Strip Banner URL (375x123px Apple Strip Hero)
-                </label>
-                <input
-                  type="text"
-                  value={stripImageUrl}
-                  onChange={(e) => setStripImageUrl(e.target.value)}
-                  placeholder="https://.../strip.jpg (Cloudflare R2 Public URL)"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-200 outline-none text-[11px]"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] text-slate-400 uppercase font-semibold mb-1">
-                  Logo / Badge URL (Small square logo)
-                </label>
-                <input
-                  type="text"
-                  value={logoImageUrl}
-                  onChange={(e) => setLogoImageUrl(e.target.value)}
-                  placeholder="https://.../logo.svg (Cloudflare R2 Public URL)"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-200 outline-none text-[11px]"
-                />
-              </div>
-            </div>
-
-            {/* Barcode Format */}
-            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800/80 space-y-2">
-              <span className="font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-                <Sliders className="w-3.5 h-3.5 text-sky-400" /> Barcode & Scan Technology
-              </span>
-
-              <div className="grid grid-cols-3 gap-2 pt-1">
-                {['PKBarcodeFormatQR', 'PKBarcodeFormatPDF417', 'PKBarcodeFormatCode128'].map((type) => (
-                  <button
-                    key={type}
-                    type="button"
-                    onClick={() => setBarcodeType(type)}
-                    className={`py-2 px-2 rounded-xl text-[10px] font-bold border transition-all cursor-pointer ${
-                      barcodeType === type
-                        ? 'bg-sky-500/20 border-sky-500 text-sky-400'
-                        : 'bg-slate-900 border-slate-800 text-slate-400'
-                    }`}
-                  >
-                    {type.replace('PKBarcodeFormat', '')}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Action Save Button */}
-            <div className="flex items-center justify-between pt-2">
-              {saveSuccess ? (
-                <span className="text-emerald-400 font-bold flex items-center gap-1">
-                  ✓ Template updated in D1 database!
-                </span>
-              ) : (
-                <span className="text-slate-500 text-[11px]">
-                  Updates propagate dynamically to issued passes
-                </span>
-              )}
+          {/* Sub-Tabs: Visual Builder vs API Payload Inspector */}
+          <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={() => setActiveViewTab('builder')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer ${
+                  activeViewTab === 'builder'
+                    ? 'bg-slate-800 text-sky-400 border border-slate-700'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>WalletWallet Fields</span>
+              </button>
 
               <button
-                type="submit"
-                disabled={saving}
-                className="px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold flex items-center space-x-2 transition-all cursor-pointer shadow-lg shadow-sky-500/20 disabled:opacity-50"
+                type="button"
+                onClick={() => setActiveViewTab('payload')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer ${
+                  activeViewTab === 'payload'
+                    ? 'bg-slate-800 text-sky-400 border border-slate-700'
+                    : 'text-slate-400 hover:text-white'
+                }`}
               >
-                <Save className="w-4 h-4" />
-                <span>{saving ? 'Saving to D1...' : isCreatingNew ? 'Create & Save Template in D1' : 'Save Template Changes'}</span>
+                <Code className="w-3.5 h-3.5" />
+                <span>API Payload (POST /api/passes)</span>
               </button>
             </div>
-          </form>
-        </div>
 
-        {/* Right Column: Live Interactive Device Preview (5 cols) */}
-        <div className="lg:col-span-5 flex flex-col items-center">
-          <div className="mb-4 flex items-center space-x-2 bg-slate-900 p-1 rounded-xl border border-slate-800">
-            <button
-              onClick={() => setPreviewPlatform('apple')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                previewPlatform === 'apple'
-                  ? 'bg-slate-800 text-white'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Apple Wallet
-            </button>
-            <button
-              onClick={() => setPreviewPlatform('google')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                previewPlatform === 'google'
-                  ? 'bg-slate-800 text-white'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Google Wallet
-            </button>
+            <div className="flex items-center space-x-1.5 text-[11px] text-emerald-400">
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Strict API Compliance</span>
+            </div>
           </div>
 
-          <div className="w-full flex justify-center">
+          {activeViewTab === 'payload' ? (
+            /* API Payload View */
+            <div className="space-y-4">
+              <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 text-xs">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-mono text-[11px] text-sky-400 font-bold">
+                    POST https://api.walletwallet.dev/api/passes
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-mono">Authorization: Bearer WALLETWALLET_API_KEY</span>
+                </div>
+                <pre className="p-3 bg-slate-900 rounded-xl overflow-x-auto text-[11px] font-mono text-slate-200 leading-relaxed border border-slate-800/80">
+                  {JSON.stringify(sampleWalletWalletPayload, null, 2)}
+                </pre>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                This JSON is sent directly to WalletWallet. Only fields officially documented on <a href="https://www.walletwallet.dev/docs" target="_blank" rel="noreferrer" className="text-sky-400 underline">walletwallet.dev/docs</a> are transmitted.
+              </p>
+            </div>
+          ) : (
+            /* Builder Form */
+            <form onSubmit={handleSave} className="space-y-6 text-xs">
+              {isCreatingNew && (
+                <div className="p-3 bg-emerald-950/40 border border-emerald-500/30 rounded-2xl text-emerald-300 flex items-center justify-between text-xs">
+                  <span>✨ Creating a new WalletWallet pass template.</span>
+                  <button
+                    type="button"
+                    onClick={() => templates.length > 0 && loadTemplateIntoForm(templates[0])}
+                    className="text-[11px] underline text-emerald-400 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+
+              {saveError && (
+                <div className="p-3 bg-rose-950/60 border border-rose-500/40 rounded-2xl text-rose-300 text-xs">
+                  ⚠️ {saveError}
+                </div>
+              )}
+
+              {saveSuccess && (
+                <div className="p-3 bg-emerald-950/60 border border-emerald-500/40 rounded-2xl text-emerald-300 text-xs flex items-center gap-1.5">
+                  <Check className="w-4 h-4 text-emerald-400" /> Pass template saved successfully to Cloudflare D1.
+                </div>
+              )}
+
+              {/* 1. Internal Template Name */}
+              <div>
+                <label className="block uppercase font-bold text-slate-400 mb-1.5">
+                  Template Name (Internal Reference)
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Marathon VIP Digital Pass"
+                  className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 text-white font-medium outline-none"
+                />
+              </div>
+
+              {/* 2. WalletWallet Color Presets (6 Presets Exclusively) */}
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                    <Palette className="w-3.5 h-3.5 text-sky-400" /> WalletWallet Color Preset
+                  </span>
+                  <span className="text-[10px] text-sky-400 font-mono">
+                    Free Tier Safe Presets (6 Available)
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-snug">
+                  WalletWallet passes use verified contrast-safe color presets to guarantee readability and acceptance on Apple Wallet and Google Wallet.
+                </p>
+
+                {/* 6 Preset Buttons */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
+                  {(Object.keys(WALLET_COLOR_PRESETS) as WalletColorPreset[]).map((presetKey) => {
+                    const preset = WALLET_COLOR_PRESETS[presetKey];
+                    const isSelected = colorPreset === presetKey;
+
+                    return (
+                      <button
+                        key={presetKey}
+                        type="button"
+                        onClick={() => setColorPreset(presetKey)}
+                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                          isSelected
+                            ? 'bg-slate-900 border-sky-400 shadow-md ring-1 ring-sky-400/50'
+                            : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          {/* Color Dot Swatch */}
+                          <div 
+                            className="w-5 h-5 rounded-full border border-white/20 shadow-inner flex items-center justify-center"
+                            style={{ backgroundColor: preset.bgHex }}
+                          >
+                            {isSelected && <Check className="w-3 h-3 text-white" />}
+                          </div>
+                          <span className={`text-[9px] font-mono uppercase px-1.5 py-0.5 rounded ${preset.badgeClass}`}>
+                            {preset.id}
+                          </span>
+                        </div>
+                        <div>
+                          <p className="font-bold text-white text-xs">{preset.name}</p>
+                          <p className="text-[10px] text-slate-400 truncate">{preset.description}</p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 3. Pass Identity: organizationName, logoText, description */}
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                <span className="font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-sky-400" /> Pass Header & Identity
+                </span>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-400 mb-1">
+                      organizationName (Issuer Name)
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={64}
+                      value={organizationName}
+                      onChange={(e) => setOrganizationName(e.target.value)}
+                      placeholder="e.g. 3F Striders"
+                      className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 focus:border-sky-500 text-white font-medium outline-none text-xs"
+                    />
+                    <p className="text-[9px] text-slate-500 mt-1">Shown in lock screen notifications (max 64 chars)</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-400 mb-1">
+                      logoText (Pass Header Title)
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={64}
+                      value={logoText}
+                      onChange={(e) => setLogoText(e.target.value)}
+                      placeholder="e.g. Golden Gate Marathon 2026"
+                      className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 focus:border-sky-500 text-white font-medium outline-none text-xs"
+                    />
+                    <p className="text-[9px] text-slate-500 mt-1">Rendered at top-left of the pass face (max 64 chars)</p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 mb-1">
+                    description (Pass Summary)
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={128}
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="e.g. Official Participant Digital Pass"
+                    className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 focus:border-sky-500 text-white font-medium outline-none text-xs"
+                  />
+                  <p className="text-[9px] text-slate-500 mt-1">Accessibility and Wallet details description (max 128 chars)</p>
+                </div>
+              </div>
+
+              {/* 4. Barcode Settings */}
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                <span className="font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                  <QrCode className="w-3.5 h-3.5 text-sky-400" /> Barcode & Alt Text
+                </span>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-400 mb-1">
+                      barcodeFormat
+                    </label>
+                    <select
+                      value={barcodeFormat}
+                      onChange={(e: any) => setBarcodeFormat(e.target.value)}
+                      className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 focus:border-sky-500 text-white font-medium outline-none text-xs cursor-pointer"
+                    >
+                      <option value="QR">QR Code (Recommended for Turnstiles & Chutes)</option>
+                      <option value="Code128">Code128 (1D Barcode for Handheld Scanners)</option>
+                      <option value="PDF417">PDF417 (Dense 2D)</option>
+                      <option value="Aztec">Aztec (High Speed 2D)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-400 mb-1">
+                      barcodeAltText Template
+                    </label>
+                    <input
+                      type="text"
+                      value={barcodeAltText}
+                      onChange={(e) => setBarcodeAltText(e.target.value)}
+                      placeholder="BIB #{{bib}}"
+                      className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 focus:border-sky-500 text-white font-medium outline-none text-xs font-mono"
+                    />
+                    <p className="text-[9px] text-slate-500 mt-1">Rendered below barcode. Use {'{{bib}}'} placeholder.</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* 5. Card Front Fields: headerFields, primaryFields, secondaryFields */}
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                <span className="font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-sky-400" /> Card Face Fields
+                </span>
+
+                {/* Header Field & Primary Field */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                    <span className="text-[10px] font-mono font-bold text-sky-400 uppercase block mb-1.5">
+                      headerFields[0] (Top Right)
+                    </span>
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={headerLabel}
+                        onChange={(e) => setHeaderLabel(e.target.value)}
+                        placeholder="Label: WAVE"
+                        className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-white text-xs outline-none"
+                      />
+                      <input
+                        type="text"
+                        value={headerKey}
+                        onChange={(e) => setHeaderKey(e.target.value)}
+                        placeholder="Key: wave"
+                        className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 text-xs font-mono outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                    <span className="text-[10px] font-mono font-bold text-emerald-400 uppercase block mb-1.5">
+                      primaryFields[0] (Hero Field)
+                    </span>
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={primaryLabel}
+                        onChange={(e) => setPrimaryLabel(e.target.value)}
+                        placeholder="Label: BIB NUMBER"
+                        className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-white text-xs outline-none"
+                      />
+                      <input
+                        type="text"
+                        value={primaryKey}
+                        onChange={(e) => setPrimaryKey(e.target.value)}
+                        placeholder="Key: bib"
+                        className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 text-xs font-mono outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Secondary Fields */}
+                <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+                  <span className="text-[10px] font-mono font-bold text-purple-400 uppercase block">
+                    secondaryFields (Card Front Details)
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] text-slate-400 block mb-1">Field 1</label>
+                      <input
+                        type="text"
+                        value={sec1Label}
+                        onChange={(e) => setSec1Label(e.target.value)}
+                        placeholder="Label: PARTICIPANT"
+                        className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-white text-xs outline-none mb-1.5"
+                      />
+                      <input
+                        type="text"
+                        value={sec1Key}
+                        onChange={(e) => setSec1Key(e.target.value)}
+                        placeholder="Key: runner_name"
+                        className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 text-xs font-mono outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-slate-400 block mb-1">Field 2</label>
+                      <input
+                        type="text"
+                        value={sec2Label}
+                        onChange={(e) => setSec2Label(e.target.value)}
+                        placeholder="Label: DIVISION"
+                        className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-white text-xs outline-none mb-1.5"
+                      />
+                      <input
+                        type="text"
+                        value={sec2Key}
+                        onChange={(e) => setSec2Key(e.target.value)}
+                        placeholder="Key: category"
+                        className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 text-xs font-mono outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 6. Card Back Fields (backFields) */}
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                    <Info className="w-3.5 h-3.5 text-sky-400" /> backFields (Pass Back Information)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleAddBackField}
+                    className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-sky-400 border border-slate-800 text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" /> Add Back Field
+                  </button>
+                </div>
+
+                <div className="space-y-2">
+                  {backFields.map((field, idx) => (
+                    <div key={idx} className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center gap-2">
+                      <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          value={field.label}
+                          onChange={(e) => handleUpdateBackField(idx, 'label', e.target.value)}
+                          placeholder="Label (e.g. Official Rules)"
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-white text-xs outline-none"
+                        />
+                        <input
+                          type="text"
+                          value={field.value || field.key || ''}
+                          onChange={(e) => handleUpdateBackField(idx, 'value', e.target.value)}
+                          placeholder="Default Value or mapped key"
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 text-xs outline-none"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveBackField(idx)}
+                        className="p-1.5 text-slate-400 hover:text-rose-400 cursor-pointer"
+                        title="Remove field"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* 7. Action Button */}
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="w-full py-3.5 px-6 rounded-2xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold transition-all shadow-lg shadow-sky-500/20 flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>{saving ? 'Saving to Cloudflare D1...' : 'Save Pass Template'}</span>
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+
+        {/* Right Column: Live Wallet Preview (5 cols) */}
+        <div className="lg:col-span-5 space-y-4 sticky top-6">
+          {/* Platform View Selector */}
+          <div className="bg-slate-900 border border-slate-800 p-2 rounded-2xl flex items-center justify-between">
+            <div className="flex items-center space-x-1">
+              <button
+                type="button"
+                onClick={() => setPreviewPlatform('apple')}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
+                  previewPlatform === 'apple'
+                    ? 'bg-slate-800 text-white shadow'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Smartphone className="w-3.5 h-3.5" />
+                <span>Apple Wallet</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setPreviewPlatform('google')}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
+                  previewPlatform === 'google'
+                    ? 'bg-slate-800 text-white shadow'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <svg viewBox="0 0 24 24" className="w-3.5 h-3.5">
+                  <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+                  <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/>
+                  <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.98 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+                  <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+                </svg>
+                <span>Google Wallet</span>
+              </button>
+            </div>
+
+            {previewPlatform === 'apple' && (
+              <button
+                type="button"
+                onClick={() => setIsFlipped(!isFlipped)}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>{isFlipped ? 'Front' : 'Back'}</span>
+              </button>
+            )}
+          </div>
+
+          {/* Pass Visual Preview */}
+          <div className="py-2">
             {previewPlatform === 'apple' ? (
               <AppleWalletPassCard
                 runner={previewRunner}
                 race={previewRace}
                 template={previewTemplate}
-                pass={{
-                  id: 'pass-preview',
-                  runner_id: previewRunner.id,
-                  walletwallet_pass_id: 'ww_preview_pass',
-                  status: 'issued',
-                  installed_apple: 1,
-                  installed_google: 0,
-                  created_at: new Date().toISOString(),
-                  updated_at: new Date().toISOString(),
-                }}
+                isFlipped={isFlipped}
+                onFlip={() => setIsFlipped(!isFlipped)}
               />
             ) : (
               <GoogleWalletPassCard
                 runner={previewRunner}
                 race={previewRace}
                 template={previewTemplate}
-                pass={{
-                  id: 'pass-preview',
-                  runner_id: previewRunner.id,
-                  walletwallet_pass_id: 'ww_preview_pass',
-                  status: 'issued',
-                  installed_apple: 0,
-                  installed_google: 1,
-                  created_at: new Date().toISOString(),
-                  updated_at: new Date().toISOString(),
-                }}
               />
             )}
           </div>
-          <p className="text-[11px] text-slate-500 mt-3 text-center">
-            Live preview rendered from your exact design specification
-          </p>
+
+          {/* Preset Information Banner */}
+          <div className="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 text-xs text-slate-400 flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <div 
+                className="w-3.5 h-3.5 rounded-full border border-white/20"
+                style={{ backgroundColor: activePresetConfig.bgHex }}
+              />
+              <span className="font-semibold text-white">Preset: {activePresetConfig.name}</span>
+            </div>
+            <span className="text-[10px] font-mono text-slate-500">{activePresetConfig.bgHex}</span>
+          </div>
         </div>
       </div>
     </div>

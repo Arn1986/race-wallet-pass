@@ -23,10 +23,15 @@ function normalizeWalletWalletUrl(rawUrl?: string): string {
   return url || 'https://api.walletwallet.dev';
 }
 
-// Derive WalletWallet colorPreset for Free Tier (Non-Pro) from hex
-function deriveColorPreset(hexColor?: string): 'dark' | 'blue' | 'green' | 'red' | 'purple' | 'orange' {
-  if (!hexColor || !hexColor.startsWith('#')) return 'dark';
-  const hex = hexColor.replace('#', '');
+// Derive WalletWallet colorPreset for Free Tier (Non-Pro) from hex or preset name
+function deriveColorPreset(hexOrPreset?: string): 'dark' | 'blue' | 'green' | 'red' | 'purple' | 'orange' {
+  if (!hexOrPreset) return 'dark';
+  const val = hexOrPreset.toLowerCase().trim();
+  if (['dark', 'blue', 'green', 'red', 'purple', 'orange'].includes(val)) {
+    return val as any;
+  }
+  if (!val.startsWith('#')) return 'dark';
+  const hex = val.replace('#', '');
   if (hex.length !== 6 && hex.length !== 3) return 'dark';
   const r = parseInt(hex.length === 3 ? hex[0] + hex[0] : hex.slice(0, 2), 16);
   const g = parseInt(hex.length === 3 ? hex[1] + hex[1] : hex.slice(2, 4), 16);
@@ -81,6 +86,7 @@ async function createWalletWalletPass(options: {
     background_color?: string;
     text_color?: string;
     label_color?: string;
+    schema_definition?: string;
     logo_image_url?: string;
     strip_image_url?: string;
   };
@@ -110,51 +116,50 @@ async function createWalletWalletPass(options: {
   const wave = String(dyn.wave || dyn.start_wave || 'Open');
   const emergency = String(dyn.emergency_contact || 'None listed');
 
-  const baseEndpoint = normalizeWalletWalletUrl(baseUrl);
+  let tplSchema: any = {};
+  if (template?.schema_definition) {
+    try { tplSchema = JSON.parse(template.schema_definition); } catch {}
+  }
 
-  // Common fields (accepted in ALL tiers, including Free)
+  const baseEndpoint = normalizeWalletWalletUrl(baseUrl);
+  const chosenColorPreset = tplSchema.colorPreset || deriveColorPreset(template?.background_color) || 'dark';
+
+  // Common fields (accepted in ALL tiers, strictly per walletwallet.dev docs)
   const body: any = {
     barcodeValue: bibNumber,
-    barcodeFormat: 'QR',
-    barcodeAltText: `BIB #${bibNumber}`,
-    logoText: (raceName || 'Athletic Pass').slice(0, 64),
-    description: `${raceName} Participant Pass`.slice(0, 128),
-    organizationName: (orgName || 'Pacific Athletic Series').slice(0, 64),
-    sharingProhibited: false,
+    barcodeFormat: tplSchema.barcodeFormat || 'QR',
+    barcodeAltText: tplSchema.barcodeAltText
+      ? tplSchema.barcodeAltText.replace('{{bib}}', bibNumber)
+      : `BIB #${bibNumber}`,
+    logoText: (tplSchema.logoText || raceName || 'Athletic Pass').slice(0, 64),
+    description: (tplSchema.description || `${raceName} Participant Pass`).slice(0, 128),
+    organizationName: (tplSchema.organizationName || orgName || '3F Striders').slice(0, 64),
+    sharingProhibited: tplSchema.sharingProhibited !== undefined ? Boolean(tplSchema.sharingProhibited) : false,
+    colorPreset: chosenColorPreset,
     primaryFields: [
-      { label: 'BIB NUMBER', value: bibNumber },
+      { label: tplSchema.primaryFields?.[0]?.label || 'BIB NUMBER', value: bibNumber },
     ],
     secondaryFields: [
-      { label: 'PARTICIPANT', value: `${runner.first_name} ${runner.last_name}`.slice(0, 64) },
-      { label: 'DIVISION', value: division.slice(0, 64) },
+      { label: tplSchema.secondaryFields?.[0]?.label || 'PARTICIPANT', value: `${runner.first_name} ${runner.last_name}`.slice(0, 64) },
+      { label: tplSchema.secondaryFields?.[1]?.label || 'DIVISION', value: division.slice(0, 64) },
     ],
     headerFields: [
-      { label: 'WAVE', value: wave.slice(0, 64) },
+      { label: tplSchema.headerFields?.[0]?.label || 'WAVE', value: wave.slice(0, 64) },
     ],
-    backFields: [
-      { label: 'Emergency Contact', value: emergency.slice(0, 256) },
-      { label: 'Runner Email', value: runner.email.slice(0, 128) },
-      { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
-    ],
+    backFields: (tplSchema.backFields && Array.isArray(tplSchema.backFields) && tplSchema.backFields.length > 0)
+      ? tplSchema.backFields.map((f: any) => ({
+          label: f.label || 'Information',
+          value: f.value || (f.key === 'email' ? runner.email : f.key === 'emergency_contact' ? emergency : 'Present pass at check-in.'),
+        }))
+      : [
+          { label: 'Emergency Contact', value: emergency.slice(0, 256) },
+          { label: 'Runner Email', value: runner.email.slice(0, 128) },
+          { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
+        ],
   };
 
-  if (plan === 'free') {
-    // Non-Pro Free Tier:
-    // Explicitly use colorPreset and omit Pro-only fields (color, logoURL, stripURL, etc.)
-    body.colorPreset = deriveColorPreset(template?.background_color);
-  } else {
-    // Pro Tier:
-    if (template?.background_color && template.background_color.startsWith('#')) {
-      body.color = template.background_color;
-    } else {
-      body.colorPreset = deriveColorPreset(template?.background_color);
-    }
-    if (template?.logo_image_url && template.logo_image_url.startsWith('https://')) {
-      body.logoURL = template.logo_image_url;
-    }
-    if (template?.strip_image_url && template.strip_image_url.startsWith('https://')) {
-      body.stripURL = template.strip_image_url;
-    }
+  if (plan === 'pro' && template?.background_color && template.background_color.startsWith('#')) {
+    body.color = template.background_color;
   }
 
   const cleanApiKey = apiKey.trim().replace(/^Bearer\s+/i, '');
@@ -502,23 +507,24 @@ async function ensureD1Bootstrap(env: Env): Promise<string> {
     const countResult = await env.DB.prepare("SELECT COUNT(*) as cnt FROM Templates").first<any>();
     if (!countResult || countResult.cnt === 0) {
       const defaultSchema = JSON.stringify({
-        passType: 'eventTicket',
-        barcodeType: 'PKBarcodeFormatQR',
-        primaryFields: [{ key: 'bib', label: 'BIB NUMBER' }],
+        organizationName: '3F Striders',
+        logoText: 'Golden Gate Marathon 2026',
+        description: 'Official Participant Digital Pass',
+        colorPreset: 'dark',
+        barcodeFormat: 'QR',
+        barcodeAltText: 'BIB #{{bib}}',
+        headerFields: [{ label: 'WAVE', key: 'wave' }],
+        primaryFields: [{ label: 'BIB NUMBER', key: 'bib' }],
         secondaryFields: [
-          { key: 'category', label: 'CATEGORY' },
-          { key: 'wave', label: 'START WAVE' },
-        ],
-        auxiliaryFields: [
-          { key: 'corral', label: 'CORRAL' },
-          { key: 'expected_pace', label: 'TARGET PACE' },
-          { key: 'tshirt_size', label: 'SHIRT' },
+          { label: 'PARTICIPANT', key: 'runner_name' },
+          { label: 'DIVISION', key: 'category' },
         ],
         backFields: [
-          { key: 'emergency_contact', label: 'Emergency Contact' },
-          { key: 'medical_notes', label: 'Medical Notes' },
-          { key: 'race_rules', label: 'Official Rules & Timing Chips' },
+          { label: 'Emergency Contact', key: 'emergency_contact', value: 'Maria Caisip (+1 415-555-0199)' },
+          { label: 'Runner Email', key: 'email', value: 'arnoldcaisip@gmail.com' },
+          { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
         ],
+        sharingProhibited: false,
       });
 
       await env.DB.prepare(`
@@ -526,9 +532,9 @@ async function ensureD1Bootstrap(env: Env): Promise<string> {
           id, org_id, name, background_color, text_color, label_color,
           logo_image_url, strip_image_url, schema_definition
         ) VALUES (
-          'tpl-marathon-vip', ?, 'Marathon VIP Digital Pass', '#0f172a', '#ffffff', '#38bdf8',
-          'https://images.unsplash.com/photo-1552674605-db6ffd4facb5?auto=format&fit=crop&w=400&q=80',
-          'https://images.unsplash.com/photo-1502680390469-be75c86b636f?auto=format&fit=crop&w=1200&q=80',
+          'tpl-marathon-vip', ?, 'Marathon VIP Digital Pass', '#18181b', '#ffffff', '#a1a1aa',
+          '',
+          '',
           ?
         )
       `).bind(activeOrgId, defaultSchema).run();
@@ -1619,21 +1625,41 @@ export default {
         if (runner) {
           const pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
           const race = await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>();
+          const template = race ? await env.DB.prepare('SELECT * FROM Templates WHERE id = ?').bind(race.template_id).first<any>() : null;
+          
           let dyn: Record<string, any> = {};
           try { dyn = JSON.parse(runner.dynamic_data || '{}'); } catch {}
           const bib = dyn.bib_number || dyn.bib || runner.id.replace('run-', '').slice(0, 8).toUpperCase();
           const wave = dyn.start_wave || dyn.wave || 'Open Wave';
           const division = dyn.race_division || dyn.category || 'Standard';
 
+          let tplSchema: any = {};
+          if (template?.schema_definition) {
+            try { tplSchema = JSON.parse(template.schema_definition); } catch {}
+          }
+
+          const preset = tplSchema.colorPreset || deriveColorPreset(template?.background_color) || 'dark';
+          const presetBgMap: Record<string, string> = {
+            dark: '#18181b',
+            blue: '#1e3a8a',
+            green: '#064e3b',
+            red: '#881337',
+            purple: '#581c87',
+            orange: '#7c2d12',
+          };
+          const bgHex = presetBgMap[preset] || '#18181b';
+          const orgTitle = tplSchema.organizationName || '3F Striders';
+          const passTitle = tplSchema.logoText || race?.name || 'Athletic Event';
+
           const googleButton = pass?.google_save_url
-            ? `<a href="${pass.google_save_url}" target="_blank" style="display: block; width: 100%; padding: 14px 16px; background-color: #1e293b; border: 1px solid #475569; color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 14px; text-decoration: none; text-align: center; margin-bottom: 12px; box-sizing: border-box;">
+            ? `<a href="${pass.google_save_url}" target="_blank" style="display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 14px 16px; background-color: #18181b; border: 1px solid #3f3f46; color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 16px; text-decoration: none; margin-bottom: 12px; box-sizing: border-box; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
                 Save to Google Wallet ↗
                </a>`
             : '';
 
           const shareLink = pass?.share_url
-            ? `<p style="text-align: center; margin: 12px 0 0; font-size: 12px;">
-                <a href="${pass.share_url}" target="_blank" style="color: #38bdf8; text-decoration: underline;">
+            ? `<p style="text-align: center; margin: 14px 0 0; font-size: 12px;">
+                <a href="${pass.share_url}" target="_blank" style="color: #38bdf8; text-decoration: underline; font-weight: 600;">
                   Open Device-Aware Pass Installation Page (WalletWallet) ↗
                 </a>
                </p>`
@@ -1644,31 +1670,44 @@ export default {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${race?.name || 'Athletic Event'} - Digital Pass</title>
+  <title>${passTitle} - Official Wallet Pass</title>
   <style>
-    body { margin: 0; background-color: #020617; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px 16px; box-sizing: border-box; }
-    .card { width: 100%; max-width: 380px; background: linear-gradient(145deg, #0f172a, #1e293b); border-radius: 24px; padding: 24px; border: 1px solid #334155; box-shadow: 0 20px 40px rgba(0,0,0,0.6); }
-    .btn-apple { display: block; width: 100%; padding: 14px 16px; background-color: #000000; border: 1px solid #334155; color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 14px; text-decoration: none; text-align: center; margin-bottom: 12px; box-sizing: border-box; }
+    body { margin: 0; background-color: #09090b; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px 16px; box-sizing: border-box; }
+    .card { width: 100%; max-width: 360px; background-color: ${bgHex}; border-radius: 26px; padding: 22px; border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6); box-sizing: border-box; }
+    .btn-apple { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 14px 16px; background-color: #000000; border: 1px solid rgba(255,255,255,0.2); color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 16px; text-decoration: none; margin-bottom: 12px; box-sizing: border-box; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .badge { display: inline-block; font-size: 10px; font-family: monospace; text-transform: uppercase; background: rgba(0,0,0,0.3); padding: 4px 10px; border-radius: 9999px; border: 1px solid rgba(255,255,255,0.1); color: #94a3b8; margin-top: 4px; }
   </style>
 </head>
 <body>
   <div class="card">
-    <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #94a3b8; font-weight: 700;">${race?.name || 'Official Athletic Pass'}</div>
-    <div style="font-size: 24px; font-weight: 800; margin: 6px 0 16px; color: #ffffff;">${runner.first_name} ${runner.last_name}</div>
-    <div style="background: rgba(15,23,42,0.8); border: 1px solid #334155; border-radius: 16px; padding: 16px; margin-bottom: 20px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-        <span style="font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700;">Bib Number</span>
-        <span style="font-size: 20px; font-weight: 800; font-family: monospace; color: #38bdf8;">#${bib}</span>
+    <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; margin-bottom: 16px;">
+      <div>
+        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; font-weight: 700;">${orgTitle}</div>
+        <div style="font-size: 14px; font-weight: 700; color: #ffffff; margin-top: 2px;">${passTitle}</div>
       </div>
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-        <span style="font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700;">Division</span>
-        <span style="font-size: 13px; font-weight: 600; color: #e2e8f0;">${division}</span>
-      </div>
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700;">Start Wave</span>
-        <span style="font-size: 13px; font-weight: 600; color: #e2e8f0;">${wave}</span>
+      <div style="text-align: right;">
+        <div style="font-size: 9px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">Wave</div>
+        <div style="font-size: 12px; font-weight: 700; color: #ffffff;">${wave}</div>
       </div>
     </div>
+
+    <div style="text-align: center; padding: 12px 0 20px;">
+      <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: #94a3b8; font-weight: 800;">BIB NUMBER</div>
+      <div style="font-size: 52px; font-weight: 900; font-family: monospace; color: #ffffff; line-height: 1; margin: 6px 0;">${bib}</div>
+      <div class="badge">WalletWallet Standard • Preset: ${preset}</div>
+    </div>
+
+    <div style="background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 14px; margin-bottom: 18px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 10px; color: #94a3b8; text-transform: uppercase; font-weight: 700;">Participant</span>
+        <span style="font-size: 13px; font-weight: 600; color: #ffffff;">${runner.first_name} ${runner.last_name}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 10px; color: #94a3b8; text-transform: uppercase; font-weight: 700;">Division</span>
+        <span style="font-size: 13px; font-weight: 600; color: #ffffff;">${division}</span>
+      </div>
+    </div>
+
     <a href="/api/pass/download/${runnerId}" class="btn-apple">
       Add to Apple Wallet (.pkpass) ↓
     </a>
