@@ -58,7 +58,7 @@ app.get('/api/pass/download/:id', async (req, res) => {
     if (pass.apple_pass_base64) {
       const buffer = Buffer.from(pass.apple_pass_base64, 'base64');
       res.setHeader('Content-Type', 'application/vnd.apple.pkpass');
-      res.setHeader('Content-Disposition', `attachment; filename="pass_${bibNumber}.pkpass"`);
+      res.setHeader('Content-Disposition', `inline; filename="pass_${bibNumber}.pkpass"`);
       res.setHeader('Content-Length', buffer.length);
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       return res.end(buffer);
@@ -74,7 +74,7 @@ app.get('/api/pass/download/:id', async (req, res) => {
     });
 
     res.setHeader('Content-Type', 'application/vnd.apple.pkpass');
-    res.setHeader('Content-Disposition', `attachment; filename="pass_${bibNumber}.pkpass"`);
+    res.setHeader('Content-Disposition', `inline; filename="pass_${bibNumber}.pkpass"`);
     res.setHeader('Content-Length', buffer.length);
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 

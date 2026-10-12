@@ -1064,7 +1064,43 @@ export default {
           bibNumber = dyn.bib_number || dyn.bib || 'pass';
         } catch {}
 
-        // If WalletWallet API returned the signed .pkpass binary (base64)
+        // If Apple pass binary is not yet generated, attempt on-the-fly provision via WalletWallet
+        if (!passRecord.apple_pass_base64) {
+          const walletwalletApiKey = env.WALLETWALLET_API_KEY || (await getSystemSetting(env, 'walletwalletApiKey')) || '';
+          if (walletwalletApiKey) {
+            try {
+              const rawUrl = env.WALLETWALLET_API_URL || (await getSystemSetting(env, 'walletwalletApiUrl')) || 'https://api.walletwallet.dev';
+              const plan = ((await getSystemSetting(env, 'walletwalletPlan')) || env.WALLETWALLET_PLAN || 'free') as 'free' | 'pro';
+              const wwRes = await createWalletWalletPass({
+                apiKey: walletwalletApiKey,
+                baseUrl: rawUrl,
+                plan,
+                raceName: race?.name || 'Athletic Event',
+                orgName: race?.org_name || 'Pacific Athletic Series',
+                runner,
+                template: template || undefined,
+              });
+
+              if (wwRes.success && wwRes.applePass) {
+                passRecord.apple_pass_base64 = wwRes.applePass;
+                passRecord.walletwallet_pass_id = wwRes.serialNumber;
+                passRecord.google_save_url = wwRes.googleSaveUrl || passRecord.google_save_url;
+
+                ctx.waitUntil(
+                  env.DB.prepare(`
+                    UPDATE Passes 
+                    SET walletwallet_pass_id = ?, google_save_url = ?, apple_pass_base64 = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE runner_id = ?
+                  `).bind(wwRes.serialNumber, wwRes.googleSaveUrl || null, wwRes.applePass, runnerId).run()
+                );
+              }
+            } catch (syncErr) {
+              console.error('On-the-fly WalletWallet provision error:', syncErr);
+            }
+          }
+        }
+
+        // If signed .pkpass binary was returned from WalletWallet API
         if (passRecord.apple_pass_base64) {
           const binaryString = atob(passRecord.apple_pass_base64);
           const bytes = new Uint8Array(binaryString.length);
@@ -1074,7 +1110,7 @@ export default {
           return new Response(bytes, {
             headers: {
               'Content-Type': 'application/vnd.apple.pkpass',
-              'Content-Disposition': `attachment; filename="pass_${bibNumber}.pkpass"`,
+              'Content-Disposition': `inline; filename="pass_${bibNumber}.pkpass"`,
               'Cache-Control': 'no-cache, no-store, must-revalidate',
               ...corsHeaders,
             },
@@ -1092,7 +1128,7 @@ export default {
         return new Response(new Uint8Array(buffer), {
           headers: {
             'Content-Type': 'application/vnd.apple.pkpass',
-            'Content-Disposition': `attachment; filename="pass_${bibNumber}.pkpass"`,
+            'Content-Disposition': `inline; filename="pass_${bibNumber}.pkpass"`,
             'Cache-Control': 'no-cache, no-store, must-revalidate',
             ...corsHeaders,
           },

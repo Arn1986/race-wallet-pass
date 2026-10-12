@@ -79,38 +79,18 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
     fetchPassDetails();
   }, [runnerId]);
 
-  const handleDownloadApplePass = async () => {
-    if (!data) return;
-    try {
-      setDownloading(true);
-      // If pass has not been provisioned with WalletWallet yet, attempt a live sync
-      if (!data.pass?.apple_pass_base64) {
-        try {
-          const syncRes = await fetch(`/api/pass/sync/${runnerId}`, { method: 'POST' });
-          const syncJson = await syncRes.json();
-          if (syncJson.success) {
-            await fetchPassDetails();
-          }
-        } catch {}
-      }
+  const handleDownloadApplePass = () => {
+    if (!data || isRevoked) return;
+    setDownloading(true);
 
-      // Direct stream download of .pkpass
-      const downloadUrl = `/api/pass/download/${runnerId}`;
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.setAttribute('download', `pass_${runnerId}.pkpass`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+    // Direct top-level navigation: On iOS Safari, the browser hands application/vnd.apple.pkpass to PassKit
+    // to pop up the native Apple Wallet "Add Pass" modal sheet.
+    window.location.href = `/api/pass/download/${runnerId}`;
 
-      // Re-fetch to reflect installed_apple = 1
-      setTimeout(() => {
-        fetchPassDetails();
-        setDownloading(false);
-      }, 1000);
-    } catch (err) {
+    setTimeout(() => {
+      fetchPassDetails();
       setDownloading(false);
-    }
+    }, 2500);
   };
 
   const handleAddGoogleWallet = async () => {
@@ -445,25 +425,35 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
           {/* iOS Device Priority: Apple Wallet is Primary */}
           {detectedPlatform === 'ios' ? (
             <>
-              {/* Apple Wallet Primary Button */}
-              <button
-                onClick={handleDownloadApplePass}
-                disabled={downloading || isRevoked}
+              {/* Apple Wallet Primary Link (opens native PassKit modal on iOS Safari) */}
+              <a
+                href={`/api/pass/download/${runnerId}`}
+                onClick={(e) => {
+                  if (isRevoked) {
+                    e.preventDefault();
+                    return;
+                  }
+                  setDownloading(true);
+                  setTimeout(() => {
+                    fetchPassDetails();
+                    setDownloading(false);
+                  }, 2500);
+                }}
                 className={`w-full py-4 px-4 rounded-2xl bg-black hover:bg-neutral-900 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
-                  isRevoked ? 'opacity-50 cursor-not-allowed' : ''
+                  isRevoked ? 'opacity-50 pointer-events-none' : ''
                 }`}
               >
-                <svg viewBox="0 0 170 170" className="w-5 h-5 fill-current text-white">
+                <svg viewBox="0 0 170 170" className="w-5 h-5 fill-current text-white flex-shrink-0">
                   <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.74 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.69-3.04-7.66-7.86-11.91-14.46-5.74-9.01-10.23-19.34-13.48-30.98-3.26-11.64-4.89-22.95-4.89-33.93 0-16.14 4.35-29.49 13.04-40.06 8.69-10.58 19.53-15.98 32.51-16.23 4.93 0 10.42 1.34 16.47 4.02 6.05 2.68 9.97 4.09 11.75 4.22 1.57-.13 5.74-1.61 12.51-4.43 6.77-2.82 12.44-4.08 17.02-3.79 12.73.65 23.01 5.34 30.82 14.07-11.22 6.74-16.71 16.4-16.47 28.98.24 9.94 4.09 18.23 11.55 24.87 7.46 6.64 16.46 10.32 27.01 11.03-2.24 6.84-4.99 14.08-8.26 21.72zM119.22 31.84c0-7.39 2.65-14.28 7.95-20.67 5.3-6.39 11.95-10.45 19.95-12.17.65 1.52.98 3.14.98 4.86 0 7.39-2.73 14.41-8.19 21.06-5.46 6.65-12.16 10.6-20.09 11.85-.43-1.63-.6-3.27-.6-4.93z" />
                 </svg>
                 <div className="text-left">
                   <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
-                    {downloading ? 'Adding to Wallet...' : 'Add to'}
+                    {downloading ? 'Opening Wallet...' : 'Add to'}
                   </p>
                   <p className="text-sm font-bold text-white leading-tight">Apple Wallet</p>
                 </div>
-                <Download className="w-4 h-4 text-neutral-400 ml-auto" />
-              </button>
+                <span className="text-xs text-sky-400 font-semibold ml-auto">Add ↗</span>
+              </a>
 
               {/* Google Wallet Secondary Option */}
               <button
@@ -500,36 +490,45 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
               </button>
 
               {/* Apple Wallet Secondary Option */}
-              <button
-                onClick={handleDownloadApplePass}
-                disabled={downloading || isRevoked}
+              <a
+                href={`/api/pass/download/${runnerId}`}
                 className="w-full py-2.5 px-3 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white text-xs font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer"
               >
                 <span>Download Apple Wallet (.pkpass) instead →</span>
-              </button>
+              </a>
             </>
           ) : (
             /* Desktop / Dual Mode */
             <>
               {/* Apple Wallet Button */}
-              <button
-                onClick={handleDownloadApplePass}
-                disabled={downloading || isRevoked}
+              <a
+                href={`/api/pass/download/${runnerId}`}
+                onClick={(e) => {
+                  if (isRevoked) {
+                    e.preventDefault();
+                    return;
+                  }
+                  setDownloading(true);
+                  setTimeout(() => {
+                    fetchPassDetails();
+                    setDownloading(false);
+                  }, 2000);
+                }}
                 className={`w-full py-3.5 px-4 rounded-2xl bg-black hover:bg-neutral-900 border border-neutral-700 active:scale-[0.98] transition-all flex items-center justify-center space-x-3 shadow-xl cursor-pointer ${
-                  isRevoked ? 'opacity-50 cursor-not-allowed' : ''
+                  isRevoked ? 'opacity-50 pointer-events-none' : ''
                 }`}
               >
-                <svg viewBox="0 0 170 170" className="w-5 h-5 fill-current text-white">
+                <svg viewBox="0 0 170 170" className="w-5 h-5 fill-current text-white flex-shrink-0">
                   <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.74 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.69-3.04-7.66-7.86-11.91-14.46-5.74-9.01-10.23-19.34-13.48-30.98-3.26-11.64-4.89-22.95-4.89-33.93 0-16.14 4.35-29.49 13.04-40.06 8.69-10.58 19.53-15.98 32.51-16.23 4.93 0 10.42 1.34 16.47 4.02 6.05 2.68 9.97 4.09 11.75 4.22 1.57-.13 5.74-1.61 12.51-4.43 6.77-2.82 12.44-4.08 17.02-3.79 12.73.65 23.01 5.34 30.82 14.07-11.22 6.74-16.71 16.4-16.47 28.98.24 9.94 4.09 18.23 11.55 24.87 7.46 6.64 16.46 10.32 27.01 11.03-2.24 6.84-4.99 14.08-8.26 21.72zM119.22 31.84c0-7.39 2.65-14.28 7.95-20.67 5.3-6.39 11.95-10.45 19.95-12.17.65 1.52.98 3.14.98 4.86 0 7.39-2.73 14.41-8.19 21.06-5.46 6.65-12.16 10.6-20.09 11.85-.43-1.63-.6-3.27-.6-4.93z" />
                 </svg>
                 <div className="text-left">
                   <p className="text-[10px] uppercase tracking-wider text-neutral-400 font-semibold leading-tight">
-                    {downloading ? 'Streaming .pkpass...' : 'Add to'}
+                    {downloading ? 'Opening Pass...' : 'Add to'}
                   </p>
                   <p className="text-sm font-bold text-white leading-tight">Apple Wallet</p>
                 </div>
-                <Download className="w-4 h-4 text-neutral-400 ml-auto" />
-              </button>
+                <span className="text-xs text-neutral-400 font-semibold ml-auto">Add ↗</span>
+              </a>
 
               {/* Google Wallet Button */}
               <button
