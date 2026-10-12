@@ -608,22 +608,31 @@ WALLETWALLET_API_URL = "https://api.walletwallet.dev"`;
               </div>
 
               <div>
-                <label className="block uppercase font-bold text-slate-400 mb-1">
-                  EMAIL_FROM (Sender Header)
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block uppercase font-bold text-slate-400">
+                    EMAIL_FROM (Sender Header)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setSettings({ ...settings, emailFrom: 'Pacific Athletic Series <passes@notification.3fstriders.org>' })}
+                    className="text-[10px] text-sky-400 hover:text-sky-300 font-mono underline cursor-pointer"
+                  >
+                    Use verified domain (passes@notification.3fstriders.org)
+                  </button>
+                </div>
                 <input
                   type="text"
                   value={settings.emailFrom || ''}
                   onChange={(e) => setSettings({ ...settings, emailFrom: e.target.value })}
-                  placeholder="Wallet Pass <onboarding@resend.dev> or Passes <tickets@yourdomain.com>"
+                  placeholder="Pacific Athletic Series <passes@notification.3fstriders.org>"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
                 />
-                <div className="p-2.5 mt-2 rounded-xl bg-slate-950/80 border border-slate-800/80 text-[11px] text-slate-400 space-y-1">
-                  <p className="text-amber-300 font-semibold flex items-center gap-1">
-                    <Info className="w-3.5 h-3.5 text-amber-400" /> Resend Free Tier Recipient Rule:
+                <div className="p-2.5 mt-2 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-[11px] text-emerald-300 space-y-1">
+                  <p className="font-semibold text-emerald-200 flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Verified Custom Domain: <code className="text-white font-mono bg-emerald-900/40 px-1 py-0.5 rounded">notification.3fstriders.org</code>
                   </p>
-                  <p>
-                    When using <code className="text-sky-300">onboarding@resend.dev</code>, Resend only delivers to your registered account email. To send passes to any attendee or tester email, verify your custom domain at <a href="https://resend.com/domains" target="_blank" rel="noreferrer" className="text-sky-400 underline">resend.com/domains</a>.
+                  <p className="text-emerald-300/90 leading-relaxed">
+                    With your verified domain, you can send pass delivery emails to <strong>any runner or tester email address</strong> (e.g., using <code className="text-white font-mono">passes@notification.3fstriders.org</code>). Click <strong>Save Configuration to D1</strong> below to persist.
                   </p>
                 </div>
               </div>

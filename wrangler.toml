@@ -30,3 +30,4 @@ max_batch_timeout = 30
 [vars]
 PUBLIC_DOMAIN = "https://walletpass.3fstriders.org"
 WALLETWALLET_API_URL = "https://api.walletwallet.dev"
+EMAIL_FROM = "3f <passes@notification.3fstriders.org>"

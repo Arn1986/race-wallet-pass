@@ -144,26 +144,38 @@ WALLETWALLET_API_URL = "https://api.walletwallet.dev"
 
 Pass invitation emails and self-service lookup notifications are delivered using **Resend** (`https://resend.com`).
 
-You have two convenient ways to configure your **RESEND_API_KEY**:
+### Where to set `EMAIL_FROM` (Using your verified domain `notification.3fstriders.org`):
 
-### Method 1: Directly via the Web Application UI (Recommended)
-1. In your deployed application, open the **Admin Console** (`#/admin/cloudflare`).
-2. Click the **API Credentials & Environment** sub-tab.
-3. Paste your Resend API Key (`re_...`) into **RESEND_API_KEY**.
-4. (Optional) Set **EMAIL_FROM** (default: `Wallet Pass <onboarding@resend.dev>`).
+#### Method 1: Directly via the Web Application UI (Instant & Zero Rebuild)
+1. Open the **Admin Console** in your browser and click the **Cloudflare Console & Settings** tab (`#/admin/cloudflare`).
+2. Switch to the **API Credentials & Keys** sub-tab.
+3. In the **EMAIL_FROM** field, enter your sender header:
+   ```text
+   Pacific Athletic Series <passes@notification.3fstriders.org>
+   ```
+   *(Or click the 1-click shortcut: "Use verified domain (passes@notification.3fstriders.org)")*
+4. Enter your `RESEND_API_KEY` (`re_...`).
 5. Click **Save Configuration to D1**.
-6. Use the built-in **Live Resend Delivery Smoke Test** on the same page to send a test email and verify the live connection!
+   - This writes directly to the Cloudflare D1 `SystemSettings` table and immediately applies to all outgoing pass emails without needing a rebuild or deployment.
+6. Use the **Live Resend Delivery Smoke Test** form on that same page to send a test pass email to any inbox and verify!
 
-### Method 2: Via Cloudflare Dashboard / Wrangler CLI
-```bash
-# 1. Resend Transactional Email API Key
-npx wrangler secret put RESEND_API_KEY
-# Enter your Resend token (re_...) when prompted
-
-# 2. walletwallet.dev API Secret Key (optional for mock preview)
-npx wrangler secret put WALLETWALLET_API_KEY
+#### Method 2: In `wrangler.toml` (Cloudflare Worker Environment Variables)
+In `wrangler.toml`, under `[vars]`:
+```toml
+[vars]
+PUBLIC_DOMAIN = "https://walletpass.3fstriders.org"
+WALLETWALLET_API_URL = "https://api.walletwallet.dev"
+EMAIL_FROM = "Pacific Athletic Series <passes@notification.3fstriders.org>"
 ```
-*Or in the Cloudflare Dashboard: Go to **Workers & Pages** > Your Project > **Settings** > **Variables and Secrets** > **Add Secret** (`RESEND_API_KEY`).*
+When deployed via `npx wrangler deploy`, the worker automatically injects `env.EMAIL_FROM`.
+
+#### Method 3: Via Cloudflare Dashboard / Wrangler Secrets
+```bash
+# Set EMAIL_FROM secret or variable
+npx wrangler secret put EMAIL_FROM
+# When prompted, enter: Pacific Athletic Series <passes@notification.3fstriders.org>
+```
+*Or in Cloudflare Dashboard: Go to **Workers & Pages** > Your Project > **Settings** > **Variables and Secrets** > **Add Variable/Secret** (`EMAIL_FROM`).*
 
 ---
 

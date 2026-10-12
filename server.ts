@@ -780,7 +780,7 @@ async function dispatchPassEmailServer(options: {
     </html>
   `;
 
-  const fromAddress = d1Db.settings.emailFrom || 'Wallet Pass <onboarding@resend.dev>';
+  const fromAddress = d1Db.settings.emailFrom || process.env.EMAIL_FROM || 'Pacific Athletic Series <passes@notification.3fstriders.org>';
 
   try {
     const res = await fetch('https://api.resend.com/emails', {

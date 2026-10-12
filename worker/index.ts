@@ -310,9 +310,10 @@ async function sendPassEmail(options: {
     </html>
   `;
 
-  // Resend from address:
-  const customEmailFrom = env.EMAIL_FROM || (await getSystemSetting(env, 'emailFrom'));
-  const fromAddress = customEmailFrom || 'Wallet Pass <onboarding@resend.dev>';
+  // Resend from address: prioritize D1 user setting, then worker env.EMAIL_FROM, then notification.3fstriders.org verified domain
+  const savedEmailFrom = await getSystemSetting(env, 'emailFrom');
+  const customEmailFrom = (savedEmailFrom && savedEmailFrom.trim()) ? savedEmailFrom.trim() : env.EMAIL_FROM;
+  const fromAddress = customEmailFrom || 'Pacific Athletic Series <passes@notification.3fstriders.org>';
 
   try {
     const res = await fetch('https://api.resend.com/emails', {
@@ -1396,7 +1397,8 @@ export default {
       try {
         await ensureD1Bootstrap(env);
         const resendApiKey = env.RESEND_API_KEY || (await getSystemSetting(env, 'resendApiKey')) || '';
-        const emailFrom = env.EMAIL_FROM || (await getSystemSetting(env, 'emailFrom')) || 'Wallet Pass <onboarding@resend.dev>';
+        const savedEmailFrom = await getSystemSetting(env, 'emailFrom');
+        const emailFrom = (savedEmailFrom && savedEmailFrom.trim()) ? savedEmailFrom.trim() : (env.EMAIL_FROM || 'Pacific Athletic Series <passes@notification.3fstriders.org>');
         const walletwalletApiKey = env.WALLETWALLET_API_KEY || (await getSystemSetting(env, 'walletwalletApiKey')) || '';
         const rawApiUrl = env.WALLETWALLET_API_URL || (await getSystemSetting(env, 'walletwalletApiUrl')) || 'https://api.walletwallet.dev';
         const walletwalletApiUrl = normalizeWalletWalletUrl(rawApiUrl);

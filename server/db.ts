@@ -24,7 +24,7 @@ class D1DatabaseEmulator {
     walletwalletApiUrl: process.env.WALLETWALLET_API_URL || 'https://api.walletwallet.dev',
     walletwalletPlan: (process.env.WALLETWALLET_PLAN || 'free') as 'free' | 'pro',
     resendApiKey: process.env.RESEND_API_KEY || '',
-    emailFrom: process.env.EMAIL_FROM || 'Wallet Pass <onboarding@resend.dev>',
+    emailFrom: process.env.EMAIL_FROM || 'Pacific Athletic Series <passes@notification.3fstriders.org>',
     publicDomain: process.env.PUBLIC_DOMAIN || 'https://walletpass.cloud',
   };
 
