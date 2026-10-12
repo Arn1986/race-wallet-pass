@@ -1,8 +1,9 @@
-import { generatePkpassBundle } from '../server/walletService.ts';
+import { createPassLink, deliverPass, ensureStoredPass, resolvePassLink, storeApplePass, escapeHtml } from './passDelivery.ts';
 
 export interface Env {
   DB: D1Database;
   ASSETS_BUCKET: R2Bucket;
+  PASSES_BUCKET: R2Bucket;
   PASS_QUEUE: Queue;
   ASSETS?: Fetcher;
   PUBLIC_DOMAIN: string;
@@ -67,9 +68,17 @@ async function setSystemSetting(env: Env, key: string, value: string): Promise<v
   }
 }
 
+async function retainProviderPackage(env: Env, runnerId: string, result: any): Promise<string> {
+  await env.DB.prepare(`UPDATE Passes SET walletwallet_pass_id = ?, google_save_url = ?,
+    share_url = ?, apple_pass_base64 = ?, r2_key = NULL, updated_at = CURRENT_TIMESTAMP WHERE runner_id = ?`)
+    .bind(result.serialNumber, result.googleSaveUrl || null, result.shareUrl || null, result.applePass, runnerId).run();
+  return storeApplePass(env, runnerId, result.applePass);
+}
+
 // Call WalletWallet API (https://www.walletwallet.dev/docs)
 // Supports Free tier (up to 1,000 passes/mo, no credit card required) & Pro tier
 async function createWalletWalletPass(options: {
+  env: Env;
   apiKey: string;
   baseUrl: string;
   plan: 'free' | 'pro';
@@ -98,6 +107,7 @@ async function createWalletWalletPass(options: {
   shareUrl?: string;
   error?: string;
   tierUsed: 'free' | 'pro';
+  r2Key?: string;
 }> {
   const { apiKey, baseUrl, plan, raceName, orgName, runner, template } = options;
   if (!apiKey || !apiKey.trim()) {
@@ -194,7 +204,10 @@ async function createWalletWalletPass(options: {
         });
         const retryJson: any = await retry.json().catch(() => ({}));
         if (retry.ok && retryJson.serialNumber) {
+          if (!retryJson.applePass) throw new Error('Wallet provider did not return a signed Apple package');
+          const r2Key = await retainProviderPackage(options.env, runner.id, retryJson);
           return {
+            r2Key,
             success: true,
             serialNumber: retryJson.serialNumber,
             googleSaveUrl: retryJson.googleSaveUrl,
@@ -212,7 +225,10 @@ async function createWalletWalletPass(options: {
       };
     }
 
+    if (!resJson.serialNumber || !resJson.applePass) throw new Error('Wallet provider did not return a signed Apple package');
+    const r2Key = await retainProviderPackage(options.env, runner.id, resJson);
     return {
+      r2Key,
       success: true,
       serialNumber: resJson.serialNumber,
       googleSaveUrl: resJson.googleSaveUrl,
@@ -237,10 +253,8 @@ async function sendPassEmail(options: {
   runnerId: string;
   raceName?: string;
   requestOrigin?: string;
-  googleSaveUrl?: string;
-  shareUrl?: string;
 }): Promise<{ success: boolean; error?: string; resendId?: string; hint?: string; passUrl?: string }> {
-  const { env, to, firstName, runnerId, raceName, requestOrigin, googleSaveUrl, shareUrl } = options;
+  const { env, to, firstName, runnerId, raceName, requestOrigin } = options;
 
   // 1. Resolve Resend API Key: Check Worker secret first, then D1 SystemSettings
   const resendApiKey = env.RESEND_API_KEY || (await getSystemSetting(env, 'resendApiKey'));
@@ -258,8 +272,14 @@ async function sendPassEmail(options: {
     publicDomain = 'https://walletpass.3fstriders.org';
   }
 
-  const passUrl = `${publicDomain}/pass/${runnerId}`;
-  const eventTitle = raceName || 'Official Athletic Event';
+  const pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
+  if (!pass || pass.status !== 'issued') return { success: false, error: 'An issued pass is required before sending email' };
+  try { await ensureStoredPass(env, pass); } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+  const token = await createPassLink(env, runnerId);
+  const passUrl = `${publicDomain}/${token}`;
+  const eventTitle = escapeHtml(raceName || 'Official Athletic Event');
 
   if (!resendApiKey) {
     console.warn('RESEND_API_KEY not configured in Cloudflare Worker secrets or D1.');
@@ -282,7 +302,7 @@ async function sendPassEmail(options: {
           <p style="margin: 6px 0 0; font-size: 13px; color: #e0f2fe;">Official Digital Participant Pass</p>
         </div>
         <div style="padding: 28px 24px;">
-          <p style="margin: 0 0 16px; font-size: 15px; color: #f1f5f9;">Hello <strong>${firstName}</strong>,</p>
+          <p style="margin: 0 0 16px; font-size: 15px; color: #f1f5f9;">Hello <strong>${escapeHtml(firstName)}</strong>,</p>
           <p style="margin: 0 0 24px; font-size: 14px; line-height: 1.6; color: #cbd5e1;">
             Your verified event pass is ready! You can add it directly to <strong>Apple Wallet</strong> or <strong>Google Wallet</strong> for real-time race updates, start wave alerts, and chute check-in.
           </p>
@@ -552,7 +572,33 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
+    const deliveryMatch = pathname.match(/^\/([A-Za-z0-9_-]{43})(?:\/(apple|google))?$/);
+    if (deliveryMatch) {
+      try { return await deliverPass(request, env, deliveryMatch[1], deliveryMatch[2]); }
+      catch { return new Response('Pass service temporarily unavailable', { status: 503, headers: { 'Cache-Control': 'private, no-store' } }); }
+    }
+    if (pathname.startsWith('/pass/')) {
+      return new Response('This link has been replaced. Please request a new email at /lookup.', {
+        status: 410, headers: { 'Cache-Control': 'private, no-store' },
+      });
+    }
+
     // --- API ROUTES ---
+
+    // Organizer-only endpoint: protect this with the same Access policy as the admin APIs.
+    if (pathname.startsWith('/api/pass/link/') && request.method === 'POST') {
+      try {
+        const runnerId = pathname.replace('/api/pass/link/', '');
+        const pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
+        if (!pass || pass.status !== 'issued') return Response.json({ success: false, error: 'An issued pass is required' }, { status: 409 });
+        await ensureStoredPass(env, pass);
+        const token = await createPassLink(env, runnerId);
+        return Response.json({ success: true, passUrl: `/${token}` }, { headers: { 'Cache-Control': 'private, no-store' } });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 503 });
+      }
+    }
+
 
     // =========================================================================
     // TEMPLATES ENDPOINTS (GET, POST, PUT, DELETE)
@@ -838,12 +884,15 @@ export default {
         const runnerId = `run-${crypto.randomUUID()}`;
         const passId = `pass-${runnerId}`;
         const dynStr = typeof dynamic_data === 'string' ? dynamic_data : JSON.stringify(dynamic_data || {});
-        const passStatus = issue_immediate !== false ? 'issued' : 'pending';
+        let passStatus = 'pending';
 
         await env.DB.prepare(`
           INSERT INTO Runners (id, race_id, email, first_name, last_name, dynamic_data)
           VALUES (?, ?, ?, ?, ?, ?)
         `).bind(runnerId, race_id, email, first_name, last_name, dynStr).run();
+
+        await env.DB.prepare(`INSERT INTO Passes (id, runner_id, status) VALUES (?, ?, 'pending')`)
+          .bind(passId, runnerId).run();
 
         // Retrieve Race, Template, and Organization
         const raceDetails = await env.DB.prepare(`
@@ -860,13 +909,10 @@ export default {
         const walletwalletPlan = ((await getSystemSetting(env, 'walletwalletPlan')) || env.WALLETWALLET_PLAN || 'free') as 'free' | 'pro';
 
         let wwResult: any = { success: false, error: 'WALLETWALLET_API_KEY not configured' };
-        let finalWwPassId = `ww_${runnerId}`;
-        let googleSaveUrl: string | null = null;
-        let shareUrl: string | null = null;
-        let applePassBase64: string | null = null;
 
-        if (walletwalletApiKey) {
+        if (walletwalletApiKey && issue_immediate !== false) {
           wwResult = await createWalletWalletPass({
+            env,
             apiKey: walletwalletApiKey,
             baseUrl: walletwalletApiUrl,
             plan: walletwalletPlan,
@@ -889,17 +935,14 @@ export default {
           });
 
           if (wwResult.success && wwResult.serialNumber) {
-            finalWwPassId = wwResult.serialNumber;
-            googleSaveUrl = wwResult.googleSaveUrl || null;
-            shareUrl = wwResult.shareUrl || null;
-            applePassBase64 = wwResult.applePass || null;
+            passStatus = 'issued';
           }
         }
 
-        await env.DB.prepare(`
-          INSERT INTO Passes (id, runner_id, walletwallet_pass_id, google_save_url, share_url, apple_pass_base64, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).bind(passId, runnerId, finalWwPassId, googleSaveUrl, shareUrl, applePassBase64, passStatus).run();
+        if (wwResult.success) {
+          await env.DB.prepare(`UPDATE Passes SET r2_key = ?, status = ? WHERE runner_id = ?`)
+            .bind(wwResult.r2Key, passStatus, runnerId).run();
+        }
 
         const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runnerId).first<any>();
         const pass = await env.DB.prepare('SELECT * FROM Passes WHERE id = ?').bind(passId).first<any>();
@@ -915,8 +958,6 @@ export default {
             runnerId,
             raceName: race?.name,
             requestOrigin: url.origin,
-            googleSaveUrl: googleSaveUrl || undefined,
-            shareUrl: shareUrl || undefined,
           });
         }
 
@@ -953,8 +994,6 @@ export default {
           runnerId: runner.id,
           raceName: race?.name,
           requestOrigin: url.origin,
-          googleSaveUrl: pass?.google_save_url || undefined,
-          shareUrl: pass?.share_url || undefined,
         });
 
         return Response.json({
@@ -1027,181 +1066,15 @@ export default {
     }
 
     // =========================================================================
-    // DYNAMIC PASS PROXY (Streams .pkpass from Cloudflare R2 / WalletWallet)
-    // =========================================================================
+    // Legacy download aliases require the same bearer token as the new root route.
+    // No on-demand provider calls or unsigned local fallback packages.
     if (pathname.startsWith('/api/pass/download/') || pathname.startsWith('/api/r2/pass/') || pathname.startsWith('/passes/')) {
-      let rawId = pathname;
-      if (rawId.startsWith('/api/pass/download/')) rawId = rawId.replace('/api/pass/download/', '');
-      else if (rawId.startsWith('/api/r2/pass/')) rawId = rawId.replace('/api/r2/pass/', '');
-      else if (rawId.startsWith('/passes/')) rawId = rawId.replace('/passes/', '');
-
-      const runnerId = rawId.replace(/\/(apple|pass)?(\.pkpass)?$/i, '').replace(/\.pkpass$/i, '');
-      try {
-        const passRecord = await env.DB.prepare(
-          'SELECT * FROM Passes WHERE runner_id = ?'
-        ).bind(runnerId).first<any>();
-
-        if (!passRecord) {
-          return Response.json({ success: false, error: 'Pass not found' }, { status: 404, headers: corsHeaders });
-        }
-
-        if (passRecord.status === 'revoked') {
-          return Response.json({ success: false, error: 'This pass has been revoked' }, { status: 410, headers: corsHeaders });
-        }
-
-        // Update installed_apple flag in D1
-        ctx.waitUntil(
-          env.DB.prepare('UPDATE Passes SET installed_apple = 1, updated_at = CURRENT_TIMESTAMP WHERE runner_id = ?')
-            .bind(runnerId)
-            .run()
-        );
-
-        const r2Bucket: R2Bucket | undefined = env.ASSETS_BUCKET || (env as any).R2 || (env as any).BUCKET || (env as any).WALLET_PASS_ASSETS;
-        const r2Key1 = `${runnerId}.pkpass`;
-        const r2Key2 = `passes/${runnerId}.pkpass`;
-        const r2Key3 = `passes/${runnerId}/pass.pkpass`;
-
-        const isDownload = searchParams.get('download') === '1' || searchParams.get('dl') === 'true';
-
-        // 1. Direct Delivery from Cloudflare R2 Bucket
-        if (r2Bucket) {
-          try {
-            const r2Obj = (await r2Bucket.get(r2Key1)) || (await r2Bucket.get(r2Key2)) || (await r2Bucket.get(r2Key3));
-            if (r2Obj) {
-              const headers = new Headers();
-              r2Obj.writeHttpMetadata(headers);
-              headers.set('Content-Type', 'application/vnd.apple.pkpass');
-              if (isDownload) {
-                headers.set('Content-Disposition', 'attachment; filename="pass.pkpass"');
-              } else {
-                headers.delete('Content-Disposition');
-                headers.delete('content-disposition');
-              }
-              headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-              headers.set('Vary', 'Origin');
-              headers.set('x-r2-source', 'cloudflare-r2');
-              if (r2Obj.httpEtag) headers.set('etag', r2Obj.httpEtag);
-              for (const [k, v] of Object.entries(corsHeaders)) {
-                headers.set(k, v);
-              }
-              return new Response(r2Obj.body, { headers });
-            }
-          } catch (r2Err) {
-            console.warn('R2 read error:', r2Err);
-          }
-        }
-
-        const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runnerId).first<any>();
-        const race = runner ? await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>() : null;
-        const template = race ? await env.DB.prepare('SELECT * FROM Templates WHERE id = ?').bind(race.template_id).first<any>() : null;
-
-        if (!runner || !race || !template) {
-          return Response.json({ success: false, error: 'Participant or race record not found' }, { status: 404, headers: corsHeaders });
-        }
-
-        // If Apple pass binary is not yet generated, attempt on-the-fly provision via WalletWallet
-        if (!passRecord.apple_pass_base64) {
-          const walletwalletApiKey = env.WALLETWALLET_API_KEY || (await getSystemSetting(env, 'walletwalletApiKey')) || '';
-          if (walletwalletApiKey) {
-            try {
-              const rawUrl = env.WALLETWALLET_API_URL || (await getSystemSetting(env, 'walletwalletApiUrl')) || 'https://api.walletwallet.dev';
-              const plan = ((await getSystemSetting(env, 'walletwalletPlan')) || env.WALLETWALLET_PLAN || 'free') as 'free' | 'pro';
-              const wwRes = await createWalletWalletPass({
-                apiKey: walletwalletApiKey,
-                baseUrl: rawUrl,
-                plan,
-                raceName: race?.name || 'Athletic Event',
-                orgName: race?.org_name || 'Pacific Athletic Series',
-                runner,
-                template: template || undefined,
-              });
-
-              if (wwRes.success && wwRes.applePass) {
-                passRecord.apple_pass_base64 = wwRes.applePass;
-                passRecord.walletwallet_pass_id = wwRes.serialNumber;
-                passRecord.google_save_url = wwRes.googleSaveUrl || passRecord.google_save_url;
-
-                ctx.waitUntil(
-                  env.DB.prepare(`
-                    UPDATE Passes 
-                    SET walletwallet_pass_id = ?, google_save_url = ?, apple_pass_base64 = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE runner_id = ?
-                  `).bind(wwRes.serialNumber, wwRes.googleSaveUrl || null, wwRes.applePass, runnerId).run()
-                );
-              }
-            } catch (syncErr) {
-              console.error('On-the-fly WalletWallet provision error:', syncErr);
-            }
-          }
-        }
-
-        let passBytes: Uint8Array | null = null;
-
-        // If signed .pkpass binary was returned from WalletWallet API
-        if (passRecord.apple_pass_base64) {
-          const binaryString = atob(passRecord.apple_pass_base64);
-          passBytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            passBytes[i] = binaryString.charCodeAt(i);
-          }
-        } else {
-          // Fallback: Generate local .pkpass bundle at edge
-          const buffer = await generatePkpassBundle({
-            runner,
-            race,
-            template,
-            pass: passRecord as any,
-          });
-          passBytes = new Uint8Array(buffer);
-        }
-
-        // Save into Cloudflare R2 bucket at root and subfolders
-        let r2SaveStatus = 'skipped';
-        if (r2Bucket && passBytes) {
-          try {
-            const rawBuffer = passBytes.buffer.slice(passBytes.byteOffset, passBytes.byteOffset + passBytes.byteLength);
-            const r2Meta = {
-              httpMetadata: {
-                contentType: 'application/vnd.apple.pkpass',
-                cacheControl: 'no-store, no-cache, must-revalidate',
-              },
-            };
-            await Promise.all([
-              r2Bucket.put(r2Key1, rawBuffer, r2Meta),
-              r2Bucket.put(r2Key2, rawBuffer, r2Meta),
-              r2Bucket.put(r2Key3, rawBuffer, r2Meta),
-            ]);
-            r2SaveStatus = 'saved_all_keys';
-            ctx.waitUntil(
-              env.DB.prepare('UPDATE Passes SET r2_key = ?, updated_at = CURRENT_TIMESTAMP WHERE runner_id = ?')
-                .bind(r2Key2, runnerId)
-                .run()
-            );
-          } catch (r2SaveErr: any) {
-            r2SaveStatus = `error: ${r2SaveErr.message || r2SaveErr}`;
-            console.warn('Failed saving pass to R2:', r2SaveErr);
-          }
-        } else if (!r2Bucket) {
-          r2SaveStatus = 'binding_not_found';
-        }
-
-        const respHeaders: Record<string, string> = {
-          'Content-Type': 'application/vnd.apple.pkpass',
-          'Cache-Control': 'no-store, no-cache, must-revalidate',
-          'Vary': 'Origin',
-          'x-r2-status': r2SaveStatus,
-          ...corsHeaders,
-        };
-        if (isDownload) {
-          respHeaders['Content-Disposition'] = 'attachment; filename="pass.pkpass"';
-        }
-
-        return new Response(passBytes as any, {
-          headers: respHeaders,
-        });
-      } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
-      }
+      const runnerId = pathname.replace(/^\/(api\/pass\/download|api\/r2\/pass|passes)\//, '')
+        .replace(/\/(apple|pass)?(\.pkpass)?$/i, '').replace(/\.pkpass$/i, '');
+      const token = searchParams.get('token') || '';
+      const pass = await resolvePassLink(env, token);
+      if (!pass || pass.runner_id !== runnerId) return new Response('Pass link not found', { status: 404 });
+      return deliverPass(request, env, token, 'apple');
     }
 
     // =========================================================================
@@ -1365,17 +1238,16 @@ export default {
         });
 
         return Response.json({
-          success: true,
+          success: emailResult.success,
           message: emailResult.success
             ? `Pass delivery email dispatched to ${runner.email}`
             : `Found pass, but email delivery error: ${emailResult.error}`,
           data: {
             runner_id: runner.id,
             email: runner.email,
-            pass_url: `/pass/${runner.id}`,
-            email_delivery: emailResult,
+            email_delivery: { success: emailResult.success, error: emailResult.error },
           },
-        }, { headers: corsHeaders });
+        }, { status: emailResult.success ? 200 : 502, headers: { ...corsHeaders, 'Cache-Control': 'private, no-store' } });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
       }
@@ -1386,44 +1258,19 @@ export default {
     // =========================================================================
     if (pathname.startsWith('/api/pass/details/')) {
       const runnerId = pathname.replace('/api/pass/details/', '');
+      const linkedPass = await resolvePassLink(env, searchParams.get('token') || '');
+      if (!linkedPass || linkedPass.runner_id !== runnerId || linkedPass.status !== 'issued') return new Response('Pass link not found', { status: 404 });
       try {
         const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runnerId).first<any>();
         if (!runner) return Response.json({ success: false, error: 'Runner not found' }, { status: 404, headers: corsHeaders });
 
-        let pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
+        const pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
         const race = await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>();
         const template = race ? await env.DB.prepare('SELECT * FROM Templates WHERE id = ?').bind(race.template_id).first<any>() : null;
 
-        // Auto-provision or upgrade to official WalletWallet pass if key is configured and pass lacks Google/Apple URLs
-        if (pass && (!pass.google_save_url || !pass.apple_pass_base64)) {
-          const walletwalletApiKey = env.WALLETWALLET_API_KEY || (await getSystemSetting(env, 'walletwalletApiKey')) || '';
-          if (walletwalletApiKey) {
-            const rawUrl = env.WALLETWALLET_API_URL || (await getSystemSetting(env, 'walletwalletApiUrl')) || 'https://api.walletwallet.dev';
-            const plan = ((await getSystemSetting(env, 'walletwalletPlan')) || env.WALLETWALLET_PLAN || 'free') as 'free' | 'pro';
-            const wwRes = await createWalletWalletPass({
-              apiKey: walletwalletApiKey,
-              baseUrl: rawUrl,
-              plan,
-              raceName: race?.name || 'Athletic Event',
-              orgName: race?.org_name || 'Pacific Athletic Series',
-              runner,
-              template: template || undefined,
-            });
-
-            if (wwRes.success && wwRes.serialNumber) {
-              await env.DB.prepare(`
-                UPDATE Passes 
-                SET walletwallet_pass_id = ?, google_save_url = ?, share_url = ?, apple_pass_base64 = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE runner_id = ?
-              `).bind(wwRes.serialNumber, wwRes.googleSaveUrl || null, wwRes.shareUrl || null, wwRes.applePass || null, runnerId).run();
-              pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
-            }
-          }
-        }
-
         return Response.json({
           success: true,
-          data: { runner, pass, race, template },
+          data: { runner, pass: pass ? { status: pass.status } : null, race, template },
         }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
@@ -1452,6 +1299,7 @@ export default {
         const rawUrl = env.WALLETWALLET_API_URL || (await getSystemSetting(env, 'walletwalletApiUrl')) || 'https://api.walletwallet.dev';
         const plan = ((await getSystemSetting(env, 'walletwalletPlan')) || env.WALLETWALLET_PLAN || 'free') as 'free' | 'pro';
         const wwRes = await createWalletWalletPass({
+            env,
           apiKey: walletwalletApiKey,
           baseUrl: rawUrl,
           plan,
@@ -1467,42 +1315,15 @@ export default {
 
         await env.DB.prepare(`
           UPDATE Passes 
-          SET walletwallet_pass_id = ?, google_save_url = ?, share_url = ?, apple_pass_base64 = ?, updated_at = CURRENT_TIMESTAMP
+          SET walletwallet_pass_id = ?, google_save_url = ?, share_url = ?, apple_pass_base64 = ?, r2_key = ?, status = 'issued', updated_at = CURRENT_TIMESTAMP
           WHERE runner_id = ?
-        `).bind(wwRes.serialNumber, wwRes.googleSaveUrl || null, wwRes.shareUrl || null, wwRes.applePass || null, runnerId).run();
-
-        // Save signed pass to R2 for edge delivery
-        if (wwRes.applePass && env.ASSETS_BUCKET) {
-          try {
-            const binaryString = atob(wwRes.applePass);
-            const passBytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-              passBytes[i] = binaryString.charCodeAt(i);
-            }
-            const r2Key = `passes/${runnerId}/pass.pkpass`;
-            await env.ASSETS_BUCKET.put(r2Key, passBytes, {
-              httpMetadata: {
-                contentType: 'application/vnd.apple.pkpass',
-                cacheControl: 'no-store, no-cache, must-revalidate',
-              },
-            });
-            await env.ASSETS_BUCKET.put(`passes/${runnerId}.pkpass`, passBytes, {
-              httpMetadata: {
-                contentType: 'application/vnd.apple.pkpass',
-                cacheControl: 'no-store, no-cache, must-revalidate',
-              },
-            });
-          } catch (r2Err) {
-            console.warn('R2 sync save error:', r2Err);
-          }
-        }
+        `).bind(wwRes.serialNumber, wwRes.googleSaveUrl || null, wwRes.shareUrl || null, wwRes.applePass || null, wwRes.r2Key, runnerId).run();
 
         const updatedPass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
         return Response.json({
           success: true,
           pass: updatedPass,
           googleSaveUrl: wwRes.googleSaveUrl,
-          shareUrl: wwRes.shareUrl,
         }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
@@ -1512,52 +1333,18 @@ export default {
     // =========================================================================
     // R2 BULK SYNC & BUCKET INSPECTOR (GET/POST /api/r2/sync-all & /api/r2/list)
     // =========================================================================
-    if (pathname === '/api/r2/sync-all') {
+    if (pathname === '/api/r2/sync-all' && request.method === 'POST') {
       try {
-        const r2Bucket: R2Bucket | undefined = env.ASSETS_BUCKET || (env as any).R2 || (env as any).BUCKET || (env as any).WALLET_PASS_ASSETS;
-        if (!r2Bucket) {
-          return Response.json({ success: false, error: 'R2 bucket binding not found on environment' }, { status: 500, headers: corsHeaders });
+        const passes = await env.DB.prepare('SELECT * FROM Passes WHERE apple_pass_base64 IS NOT NULL').all<any>();
+        const failures: string[] = [];
+        let syncedCount = 0;
+        for (const pass of passes.results) {
+          try { await ensureStoredPass(env, pass); syncedCount++; }
+          catch { failures.push(pass.runner_id); }
         }
-
-        const passes = await env.DB.prepare('SELECT runner_id, apple_pass_base64 FROM Passes WHERE apple_pass_base64 IS NOT NULL').all<any>();
-        const results: string[] = [];
-
-        for (const p of passes.results || []) {
-          if (!p.apple_pass_base64) continue;
-          try {
-            const binaryString = atob(p.apple_pass_base64);
-            const passBytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-              passBytes[i] = binaryString.charCodeAt(i);
-            }
-            const rawBuffer = passBytes.buffer.slice(passBytes.byteOffset, passBytes.byteOffset + passBytes.byteLength);
-            const r2Meta = {
-              httpMetadata: {
-                contentType: 'application/vnd.apple.pkpass',
-                cacheControl: 'no-store, no-cache, must-revalidate',
-              },
-            };
-            await Promise.all([
-              r2Bucket.put(`${p.runner_id}.pkpass`, rawBuffer, r2Meta),
-              r2Bucket.put(`passes/${p.runner_id}.pkpass`, rawBuffer, r2Meta),
-              r2Bucket.put(`passes/${p.runner_id}/pass.pkpass`, rawBuffer, r2Meta),
-            ]);
-            results.push(`${p.runner_id}.pkpass`);
-          } catch (itemErr: any) {
-            console.error(`Error saving pass for ${p.runner_id}:`, itemErr);
-          }
-        }
-
-        const listObj = await r2Bucket.list({ limit: 100 });
-        const keys = listObj.objects.map(o => o.key);
-
-        return Response.json({
-          success: true,
-          message: `Synced ${results.length} passes into R2 bucket`,
-          syncedCount: results.length,
-          totalObjectsInR2: keys.length,
-          r2Keys: keys,
-        }, { headers: corsHeaders });
+        return Response.json({ success: failures.length === 0, syncedCount, failures }, {
+          status: failures.length ? 503 : 200, headers: corsHeaders,
+        });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
       }
@@ -1802,162 +1589,43 @@ export default {
       }
     }
 
-    // Resilience Edge Fallback for /pass/:id (renders full standalone HTML if assets bundle is missing)
-    if (pathname.startsWith('/pass/')) {
-      const runnerId = pathname.replace('/pass/', '').split('?')[0].split('#')[0];
-      try {
-        const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runnerId).first<any>();
-        if (runner) {
-          const pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
-          const race = await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>();
-          const template = race ? await env.DB.prepare('SELECT * FROM Templates WHERE id = ?').bind(race.template_id).first<any>() : null;
-          
-          let dyn: Record<string, any> = {};
-          try { dyn = JSON.parse(runner.dynamic_data || '{}'); } catch {}
-          const bib = dyn.bib_number || dyn.bib || runner.id.replace('run-', '').slice(0, 8).toUpperCase();
-          const wave = dyn.start_wave || dyn.wave || 'Open Wave';
-          const division = dyn.race_division || dyn.category || 'Standard';
-
-          let tplSchema: any = {};
-          if (template?.schema_definition) {
-            try { tplSchema = JSON.parse(template.schema_definition); } catch {}
-          }
-
-          const preset = tplSchema.colorPreset || deriveColorPreset(template?.background_color) || 'dark';
-          const presetBgMap: Record<string, string> = {
-            dark: '#18181b',
-            blue: '#1e3a8a',
-            green: '#064e3b',
-            red: '#881337',
-            purple: '#581c87',
-            orange: '#7c2d12',
-          };
-          const bgHex = presetBgMap[preset] || '#18181b';
-          const orgTitle = tplSchema.organizationName || '3F Striders';
-          const passTitle = tplSchema.logoText || race?.name || 'Athletic Event';
-
-          const ua = request.headers.get('user-agent') || '';
-          const isIOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes('Macintosh') && ua.includes('Mobile'));
-          const isAndroid = /Android/i.test(ua);
-
-          let actionButtonsHtml = '';
-          const appleButton = `<a href="/api/pass/download/${runnerId}/pass.pkpass" class="btn-apple">
-            <svg viewBox="0 0 170 170" width="18" height="18" fill="currentColor" style="display: inline-block; vertical-align: middle; margin-right: 8px;"><path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.74 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.69-3.04-7.66-7.86-11.91-14.46-5.74-9.01-10.23-19.34-13.48-30.98-3.26-11.64-4.89-22.95-4.89-33.93 0-16.14 4.35-29.49 13.04-40.06 8.69-10.58 19.53-15.98 32.51-16.23 4.93 0 10.42 1.34 16.47 4.02 6.05 2.68 9.97 4.09 11.75 4.22 1.57-.13 5.74-1.61 12.51-4.43 6.77-2.82 12.44-4.08 17.02-3.79 12.73.65 23.01 5.34 30.82 14.07-11.22 6.74-16.71 16.4-16.47 28.98.24 9.94 4.09 18.23 11.55 24.87 7.46 6.64 16.46 10.32 27.01 11.03-2.24 6.84-4.99 14.08-8.26 21.72zM119.22 31.84c0-7.39 2.65-14.28 7.95-20.67 5.3-6.39 11.95-10.45 19.95-12.17.65 1.52.98 3.14.98 4.86 0 7.39-2.73 14.41-8.19 21.06-5.46 6.65-12.16 10.6-20.09 11.85-.43-1.63-.6-3.27-.6-4.93z"/></svg>
-            Add to Apple Wallet
-          </a>`;
-
-          const googleButton = pass?.google_save_url
-            ? `<a href="${pass.google_save_url}" target="_blank" class="btn-google">
-                <svg viewBox="0 0 24 24" width="18" height="18" style="display: inline-block; vertical-align: middle; margin-right: 8px;"><path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/><path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.98 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/><path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/></svg>
-                Save to Google Wallet
-               </a>`
-            : '';
-
-          if (isIOS) {
-            actionButtonsHtml = `
-              <div style="font-size: 11px; color: #38bdf8; margin-bottom: 8px; text-align: center; font-weight: 600;">📱 Apple Device Detected</div>
-              ${appleButton}
-              ${googleButton ? `<div style="text-align: center; margin-top: 6px;"><a href="${pass.google_save_url}" target="_blank" style="color: #94a3b8; font-size: 12px; text-decoration: underline;">Save to Google Wallet instead →</a></div>` : ''}
-            `;
-          } else if (isAndroid) {
-            actionButtonsHtml = `
-              <div style="font-size: 11px; color: #34d399; margin-bottom: 8px; text-align: center; font-weight: 600;">🤖 Android Device Detected</div>
-              ${googleButton || appleButton}
-              ${googleButton ? `<div style="text-align: center; margin-top: 6px;"><a href="/api/pass/download/${runnerId}/pass.pkpass" style="color: #94a3b8; font-size: 12px; text-decoration: underline;">Download Apple Wallet (.pkpass) instead →</a></div>` : ''}
-            `;
-          } else {
-            // Desktop: Show both buttons + Scan with phone QR code
-            const currentPassUrl = `${url.origin}/pass/${runnerId}`;
-            const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(currentPassUrl)}`;
-            actionButtonsHtml = `
-              ${appleButton}
-              ${googleButton}
-              <div style="margin-top: 16px; padding: 14px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; text-align: center;">
-                <div style="font-size: 12px; font-weight: 700; color: #f1f5f9; margin-bottom: 4px;">📲 Install to Phone via Camera</div>
-                <div style="font-size: 11px; color: #94a3b8; margin-bottom: 10px;">Scan with your iPhone or Android to add this pass:</div>
-                <img src="${qrCodeUrl}" alt="Scan QR Code" style="width: 140px; height: 140px; background: #ffffff; border-radius: 12px; padding: 6px; display: inline-block;" />
-              </div>
-            `;
-          }
-
-          const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${passTitle} - Official Participant Pass</title>
-  <style>
-    body { margin: 0; background-color: #09090b; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px 16px; box-sizing: border-box; }
-    .card { width: 100%; max-width: 360px; background-color: ${bgHex}; border-radius: 26px; padding: 22px; border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6); box-sizing: border-box; }
-    .btn-apple { display: flex; align-items: center; justify-content: center; width: 100%; padding: 14px 16px; background-color: #000000; border: 1px solid rgba(255,255,255,0.2); color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 16px; text-decoration: none; margin-bottom: 10px; box-sizing: border-box; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
-    .btn-google { display: flex; align-items: center; justify-content: center; width: 100%; padding: 14px 16px; background-color: #18181b; border: 1px solid #3f3f46; color: #ffffff; font-weight: 700; font-size: 14px; border-radius: 16px; text-decoration: none; margin-bottom: 10px; box-sizing: border-box; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
-    .badge { display: inline-block; font-size: 10px; font-family: monospace; text-transform: uppercase; background: rgba(0,0,0,0.3); padding: 4px 10px; border-radius: 9999px; border: 1px solid rgba(255,255,255,0.1); color: #94a3b8; margin-top: 4px; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; margin-bottom: 16px;">
-      <div>
-        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; font-weight: 700;">${orgTitle}</div>
-        <div style="font-size: 14px; font-weight: 700; color: #ffffff; margin-top: 2px;">${passTitle}</div>
-      </div>
-      <div style="text-align: right;">
-        <div style="font-size: 9px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">Wave</div>
-        <div style="font-size: 12px; font-weight: 700; color: #ffffff;">${wave}</div>
-      </div>
-    </div>
-
-    <div style="text-align: center; padding: 12px 0 20px;">
-      <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: #94a3b8; font-weight: 800;">BIB NUMBER</div>
-      <div style="font-size: 52px; font-weight: 900; font-family: monospace; color: #ffffff; line-height: 1; margin: 6px 0;">${bib}</div>
-      <div class="badge">Official Digital Pass</div>
-    </div>
-
-    <div style="background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 14px; margin-bottom: 18px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-        <span style="font-size: 10px; color: #94a3b8; text-transform: uppercase; font-weight: 700;">Participant</span>
-        <span style="font-size: 13px; font-weight: 600; color: #ffffff;">${runner.first_name} ${runner.last_name}</span>
-      </div>
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-size: 10px; color: #94a3b8; text-transform: uppercase; font-weight: 700;">Division</span>
-        <span style="font-size: 13px; font-weight: 600; color: #ffffff;">${division}</span>
-      </div>
-    </div>
-
-    ${actionButtonsHtml}
-  </div>
-</body>
-</html>`;
-          return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-        }
-      } catch (err) {}
-    }
-
-    return new Response('Cloudflare Worker Pass API Gateway Active.', { status: 200 });
+    return new Response('Not found', { status: 404 });
   },
 
-  // ---------------------------------------------------------------------------
-  // 2. Queue Consumer Handler: Background Worker for PASS_QUEUE
-  // ---------------------------------------------------------------------------
+  // Background pass issuance; persist provider package before email and acknowledgement.
   async queue(batch: MessageBatch<any>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {
         const { runner_id, payload } = message.body;
-        // Update pass status from 'pending' to 'issued' in D1
-        await env.DB.prepare(`
-          UPDATE Passes 
-          SET status = 'issued', updated_at = CURRENT_TIMESTAMP
-          WHERE runner_id = ?
-        `).bind(runner_id).run();
-
-        // Resend transactional email dispatch
+        const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runner_id).first<any>();
+        const pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runner_id).first<any>();
+        if (!runner || !pass || pass.status === 'revoked') { message.ack(); continue; }
+        if (pass.status !== 'issued' || !pass.r2_key) {
+          const race = await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>();
+          const template = race ? await env.DB.prepare('SELECT * FROM Templates WHERE id = ?').bind(race.template_id).first<any>() : null;
+          if (pass.apple_pass_base64) {
+            await ensureStoredPass(env, pass);
+          } else {
+            const result = await createWalletWalletPass({
+              env,
+              apiKey: env.WALLETWALLET_API_KEY || (await getSystemSetting(env, 'walletwalletApiKey')) || '',
+              baseUrl: env.WALLETWALLET_API_URL || 'https://api.walletwallet.dev',
+              plan: ((await getSystemSetting(env, 'walletwalletPlan')) || env.WALLETWALLET_PLAN || 'free') as 'free' | 'pro',
+              raceName: race?.name || 'Athletic Event', runner, template,
+            });
+            if (!result.success) throw new Error(result.error || 'Pass issuance failed');
+            await env.DB.prepare(`UPDATE Passes SET walletwallet_pass_id = ?, google_save_url = ?,
+              share_url = ?, apple_pass_base64 = ?, r2_key = ? WHERE runner_id = ?`)
+              .bind(result.serialNumber, result.googleSaveUrl || null, result.shareUrl || null,
+                result.applePass, result.r2Key, runner_id).run();
+          }
+          await env.DB.prepare("UPDATE Passes SET status = 'issued', updated_at = CURRENT_TIMESTAMP WHERE runner_id = ?")
+            .bind(runner_id).run();
+        }
         if (payload?.email) {
-          await sendPassEmail({
-            env,
-            to: payload.email,
-            firstName: payload.first_name || 'Participant',
-            runnerId: runner_id,
-          });
+          const emailResult = await sendPassEmail({ env, to: payload.email,
+            firstName: payload.first_name || 'Participant', runnerId: runner_id });
+          if (!emailResult.success) throw new Error('Pass email delivery failed');
         }
 
         message.ack();

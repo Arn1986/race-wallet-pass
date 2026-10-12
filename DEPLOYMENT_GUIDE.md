@@ -1,3 +1,5 @@
+> Updated wallet delivery: signed participant packages must use a separate private `PASSES_BUCKET`. Read [WALLET_DELIVERY.md](WALLET_DELIVERY.md) before deploying; it supersedes the runner-ID download/landing instructions below.
+
 # Complete Cloudflare Deployment Guide: Wallet Pass Platform
 
 This step-by-step guide walks you through deploying the **Multi-Tenant Wallet Pass Management Platform** to Cloudflare using **Cloudflare Pages / Workers**, **D1 Database (SQLite)**, **R2 Object Storage**, and **Cloudflare Queues**.

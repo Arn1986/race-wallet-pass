@@ -1,0 +1,40 @@
+name = "race-wallet-pass"
+main = "worker/index.ts"
+compatibility_date = "2026-10-10"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+
+# Cloudflare D1 Database
+[[d1_databases]]
+binding = "DB"
+database_name = "wallet_pass_db"
+database_id = "05208758-23d1-44f5-a205-3f81b567307a"
+
+# Cloudflare R2 Bucket
+[[r2_buckets]]
+binding = "ASSETS_BUCKET"
+bucket_name = "wallet-pass-assets"
+
+# Private signed pass storage: never enable public access or a custom domain.
+[[r2_buckets]]
+binding = "PASSES_BUCKET"
+bucket_name = "wallet-pass-private"
+
+# Cloudflare Queue (Producer / Consumer)
+[[queues.producers]]
+queue = "pass-issuance-queue"
+binding = "PASS_QUEUE"
+
+[[queues.consumers]]
+queue = "pass-issuance-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+
+[vars]
+PUBLIC_DOMAIN = "https://walletpass.3fstriders.org"
+WALLETWALLET_API_URL = "https://api.walletwallet.dev"
+EMAIL_FROM = "3f <passes@notification.3fstriders.org>"

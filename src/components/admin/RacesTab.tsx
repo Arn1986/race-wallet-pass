@@ -240,13 +240,33 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
     }
   };
 
-  const handleCopyPassLink = (runnerId: string) => {
-    const url = `${window.location.origin}/pass/${runnerId}`;
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(url);
+  const getPassLink = async (runnerId: string) => {
+    const response = await fetch(`/api/pass/link/${encodeURIComponent(runnerId)}`, { method: 'POST' });
+    const json = await response.json();
+    if (!response.ok || !json.success) throw new Error(json.error || 'Cannot create pass link');
+    return new URL(json.passUrl, window.location.origin).href;
+  };
+
+  const handleCopyPassLink = async (runnerId: string) => {
+    try {
+      await navigator.clipboard.writeText(await getPassLink(runnerId));
+      setCopiedRunnerId(runnerId);
+      setTimeout(() => setCopiedRunnerId(null), 2500);
+    } catch (err: any) { setNotificationMsg({ type: 'error', text: err.message }); }
+  };
+
+  const handleOpenPassLink = async (runnerId: string, apple = false) => {
+    // Open synchronously so browsers do not block the window after an async request.
+    const tab = window.open('about:blank', '_blank');
+    if (tab) tab.opener = null;
+    try {
+      const url = await getPassLink(runnerId);
+      if (tab) tab.location.href = url + (apple ? '/apple' : '');
+      else window.location.href = url + (apple ? '/apple' : '');
+    } catch (err: any) {
+      tab?.close();
+      setNotificationMsg({ type: 'error', text: err.message });
     }
-    setCopiedRunnerId(runnerId);
-    setTimeout(() => setCopiedRunnerId(null), 2500);
   };
 
   const handleSendEmail = async (runnerId: string, emailAddr: string) => {
@@ -641,7 +661,7 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                           <button
                             onClick={() => handleCopyPassLink(runner.id)}
                             className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer"
-                            title="Copy participant public pass link to clipboard"
+                            title="Copy personal wallet pass link to clipboard"
                           >
                             {copiedRunnerId === runner.id ? (
                               <Check className="w-3.5 h-3.5 text-emerald-400" />
@@ -661,7 +681,7 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
 
                           {/* Open Pass Landing Page */}
                           <button
-                            onClick={() => onOpenRunnerPass(runner.id)}
+                            onClick={() => handleOpenPassLink(runner.id)}
                             className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 transition-all cursor-pointer"
                             title="Open verified participant landing page"
                           >
@@ -669,14 +689,13 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                           </button>
 
                           {/* Direct .pkpass download */}
-                          <a
-                            href={`/api/pass/download/${runner.id}`}
-                            download
+                          <button
+                            onClick={() => handleOpenPassLink(runner.id, true)}
                             className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-400 transition-all cursor-pointer"
                             title="Download .pkpass binary bundle"
                           >
                             <Download className="w-3.5 h-3.5" />
-                          </a>
+                          </button>
 
                           {/* Revoke or Reissue */}
                           {isRevoked ? (
@@ -983,15 +1002,13 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                         <span>Direct Save to Google Wallet ↗</span>
                       </a>
                     )}
-                    <a
-                      href={`/pass/${participantResultModal.runner.id}`}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      onClick={() => handleOpenPassLink(participantResultModal.runner.id)}
                       className="px-3 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-[11px] flex items-center gap-1.5 transition-all shadow-sm"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Open Pass Landing Page ↗</span>
-                    </a>
+                      <span>Open Wallet Pass ↗</span>
+                    </button>
                   </div>
                 </div>
               ) : participantResultModal.walletwalletDelivery?.error ? (
@@ -1061,7 +1078,7 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                   <input
                     type="text"
                     readOnly
-                    value={`${window.location.origin}/pass/${participantResultModal.runner.id}`}
+                    value={participantResultModal.emailDelivery?.passUrl || 'Use Copy Link to create a personal wallet link'}
                     className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-sky-400 font-mono text-[11px] outline-none"
                   />
                   <button

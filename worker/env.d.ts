@@ -15,6 +15,7 @@ declare global {
   }
 
   interface R2Bucket {
+    head(key: string): Promise<any>;
     get(key: string): Promise<any>;
     put(key: string, value: any, options?: any): Promise<any>;
     delete(key: string | string[]): Promise<void>;

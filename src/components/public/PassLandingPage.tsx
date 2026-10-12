@@ -819,17 +819,7 @@ export const PassLandingPage: React.FC<PassLandingPageProps> = ({
                 <ChevronRight className="w-4 h-4" />
               </a>
 
-              {data.pass?.share_url && (
-                <a
-                  href={data.pass.share_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full py-2.5 px-3 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold flex items-center justify-center space-x-2 transition-all cursor-pointer border border-neutral-700"
-                >
-                  <ExternalLink className="w-3.5 h-3.5 text-neutral-400" />
-                  <span>Open via Hosted Card (walletwallet.dev)</span>
-                </a>
-              )}
+
 
               <div className="flex items-center justify-between pt-2 px-1 text-xs">
                 <a

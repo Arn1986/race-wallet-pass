@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS Passes (
     google_save_url TEXT,
     share_url TEXT,
     apple_pass_base64 TEXT,
+    r2_key TEXT,
     status TEXT CHECK(status IN ('pending', 'issued', 'revoked', 'failed')) DEFAULT 'pending',
     installed_apple BOOLEAN DEFAULT 0,
     installed_google BOOLEAN DEFAULT 0,
@@ -79,4 +80,12 @@ CREATE TABLE IF NOT EXISTS SystemSettings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Personal bearer links; keep raw tokens only in delivered emails, not in D1.
+CREATE TABLE IF NOT EXISTS PassLinks (
+    token_hash TEXT PRIMARY KEY,
+    runner_id TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (runner_id) REFERENCES Runners(id) ON DELETE CASCADE
 );

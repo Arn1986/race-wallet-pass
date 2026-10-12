@@ -170,13 +170,7 @@ export const LookupPage: React.FC<LookupPageProps> = ({ onNavigatePass, onNaviga
                     {result.race_name || 'Golden Gate Marathon 2026'}
                   </p>
                 </div>
-                <button
-                  onClick={() => onNavigatePass(result.runner_id)}
-                  className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs flex items-center space-x-1.5 transition-all cursor-pointer shadow"
-                >
-                  <span>Open Pass</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
+                <p className="text-xs text-slate-400">Open the personal link in your email.</p>
               </div>
             </div>
           )}
