@@ -1056,19 +1056,23 @@ export default {
             .run()
         );
 
-        const r2Key = `passes/${runnerId}/pass.pkpass`;
-        const r2KeyAlt = `passes/${runnerId}.pkpass`;
+        const r2Bucket: R2Bucket | undefined = env.ASSETS_BUCKET || (env as any).R2 || (env as any).BUCKET || (env as any).WALLET_PASS_ASSETS;
+        const r2Key1 = `${runnerId}.pkpass`;
+        const r2Key2 = `passes/${runnerId}.pkpass`;
+        const r2Key3 = `passes/${runnerId}/pass.pkpass`;
 
         // 1. Direct Delivery from Cloudflare R2 Bucket
-        if (env.ASSETS_BUCKET) {
+        if (r2Bucket) {
           try {
-            const r2Obj = (await env.ASSETS_BUCKET.get(r2Key)) || (await env.ASSETS_BUCKET.get(r2KeyAlt));
+            const r2Obj = (await r2Bucket.get(r2Key1)) || (await r2Bucket.get(r2Key2)) || (await r2Bucket.get(r2Key3));
             if (r2Obj) {
               const headers = new Headers();
               r2Obj.writeHttpMetadata(headers);
               headers.set('Content-Type', 'application/vnd.apple.pkpass');
               headers.set('Content-Disposition', 'attachment; filename="pass.pkpass"');
-              headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+              headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+              headers.set('Vary', 'Origin');
+              headers.set('x-r2-source', 'cloudflare-r2');
               if (r2Obj.httpEtag) headers.set('etag', r2Obj.httpEtag);
               for (const [k, v] of Object.entries(corsHeaders)) {
                 headers.set(k, v);
@@ -1144,38 +1148,44 @@ export default {
           passBytes = new Uint8Array(buffer);
         }
 
-        // Save into Cloudflare R2 bucket for permanent edge delivery
-        if (env.ASSETS_BUCKET && passBytes) {
+        // Save into Cloudflare R2 bucket at root and subfolders
+        let r2SaveStatus = 'skipped';
+        if (r2Bucket && passBytes) {
           try {
-            await env.ASSETS_BUCKET.put(r2Key, passBytes, {
+            const rawBuffer = passBytes.buffer.slice(passBytes.byteOffset, passBytes.byteOffset + passBytes.byteLength);
+            const r2Meta = {
               httpMetadata: {
                 contentType: 'application/vnd.apple.pkpass',
                 contentDisposition: 'attachment; filename="pass.pkpass"',
-                cacheControl: 'public, max-age=31536000, immutable',
+                cacheControl: 'no-store, no-cache, must-revalidate',
               },
-            });
-            await env.ASSETS_BUCKET.put(r2KeyAlt, passBytes, {
-              httpMetadata: {
-                contentType: 'application/vnd.apple.pkpass',
-                contentDisposition: 'attachment; filename="pass.pkpass"',
-                cacheControl: 'public, max-age=31536000, immutable',
-              },
-            });
+            };
+            await Promise.all([
+              r2Bucket.put(r2Key1, rawBuffer, r2Meta),
+              r2Bucket.put(r2Key2, rawBuffer, r2Meta),
+              r2Bucket.put(r2Key3, rawBuffer, r2Meta),
+            ]);
+            r2SaveStatus = 'saved_all_keys';
             ctx.waitUntil(
               env.DB.prepare('UPDATE Passes SET r2_key = ?, updated_at = CURRENT_TIMESTAMP WHERE runner_id = ?')
-                .bind(r2Key, runnerId)
+                .bind(r2Key2, runnerId)
                 .run()
             );
-          } catch (r2SaveErr) {
+          } catch (r2SaveErr: any) {
+            r2SaveStatus = `error: ${r2SaveErr.message || r2SaveErr}`;
             console.warn('Failed saving pass to R2:', r2SaveErr);
           }
+        } else if (!r2Bucket) {
+          r2SaveStatus = 'binding_not_found';
         }
 
         return new Response(passBytes as any, {
           headers: {
             'Content-Type': 'application/vnd.apple.pkpass',
             'Content-Disposition': 'attachment; filename="pass.pkpass"',
-            'Cache-Control': 'public, max-age=31536000, immutable',
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'Vary': 'Origin',
+            'x-r2-status': r2SaveStatus,
             ...corsHeaders,
           },
         });
@@ -1485,6 +1495,78 @@ export default {
           pass: updatedPass,
           googleSaveUrl: wwRes.googleSaveUrl,
           shareUrl: wwRes.shareUrl,
+        }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // =========================================================================
+    // R2 BULK SYNC & BUCKET INSPECTOR (GET/POST /api/r2/sync-all & /api/r2/list)
+    // =========================================================================
+    if (pathname === '/api/r2/sync-all') {
+      try {
+        const r2Bucket: R2Bucket | undefined = env.ASSETS_BUCKET || (env as any).R2 || (env as any).BUCKET || (env as any).WALLET_PASS_ASSETS;
+        if (!r2Bucket) {
+          return Response.json({ success: false, error: 'R2 bucket binding not found on environment' }, { status: 500, headers: corsHeaders });
+        }
+
+        const passes = await env.DB.prepare('SELECT runner_id, apple_pass_base64 FROM Passes WHERE apple_pass_base64 IS NOT NULL').all<any>();
+        const results: string[] = [];
+
+        for (const p of passes.results || []) {
+          if (!p.apple_pass_base64) continue;
+          try {
+            const binaryString = atob(p.apple_pass_base64);
+            const passBytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              passBytes[i] = binaryString.charCodeAt(i);
+            }
+            const rawBuffer = passBytes.buffer.slice(passBytes.byteOffset, passBytes.byteOffset + passBytes.byteLength);
+            const r2Meta = {
+              httpMetadata: {
+                contentType: 'application/vnd.apple.pkpass',
+                contentDisposition: 'attachment; filename="pass.pkpass"',
+                cacheControl: 'no-store, no-cache, must-revalidate',
+              },
+            };
+            await Promise.all([
+              r2Bucket.put(`${p.runner_id}.pkpass`, rawBuffer, r2Meta),
+              r2Bucket.put(`passes/${p.runner_id}.pkpass`, rawBuffer, r2Meta),
+              r2Bucket.put(`passes/${p.runner_id}/pass.pkpass`, rawBuffer, r2Meta),
+            ]);
+            results.push(`${p.runner_id}.pkpass`);
+          } catch (itemErr: any) {
+            console.error(`Error saving pass for ${p.runner_id}:`, itemErr);
+          }
+        }
+
+        const listObj = await r2Bucket.list({ limit: 100 });
+        const keys = listObj.objects.map(o => o.key);
+
+        return Response.json({
+          success: true,
+          message: `Synced ${results.length} passes into R2 bucket`,
+          syncedCount: results.length,
+          totalObjectsInR2: keys.length,
+          r2Keys: keys,
+        }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+
+    if (pathname === '/api/r2/list') {
+      try {
+        const r2Bucket: R2Bucket | undefined = env.ASSETS_BUCKET || (env as any).R2 || (env as any).BUCKET || (env as any).WALLET_PASS_ASSETS;
+        if (!r2Bucket) {
+          return Response.json({ success: false, error: 'R2 bucket binding not found' }, { status: 500, headers: corsHeaders });
+        }
+        const list = await r2Bucket.list({ limit: 100 });
+        return Response.json({
+          success: true,
+          count: list.objects.length,
+          objects: list.objects.map(o => ({ key: o.key, size: o.size, uploaded: o.uploaded })),
         }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
