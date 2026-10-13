@@ -1,3 +1,4 @@
+import { buildWalletWalletPayload } from '../../../server/walletPayload.ts';
 import React from 'react';
 import { Runner, PassTemplate, Race, Pass, getWalletColorPreset } from '../../types/index.ts';
 import { QrCode, Sparkles, CheckCircle2, AlertTriangle, Barcode } from 'lucide-react';
@@ -48,6 +49,8 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
     return fallback;
   };
 
+  schema = { ...schema, ...buildWalletWalletPayload({ runner, template, raceName: race.name, fieldMapping: race.field_mapping, plan: 'pro' }) };
+
   const isRevoked = pass?.status === 'revoked';
 
   // Derive WalletWallet Color Preset styling
@@ -60,7 +63,7 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
   const headerField = schema.headerFields?.[0] || { label: 'WAVE', key: 'wave' };
   const primaryField = schema.primaryFields?.[0] || { label: 'BIB NUMBER', key: 'bib' };
   
-  const secondaryFields = (schema.secondaryFields && schema.secondaryFields.length > 0)
+  const secondaryFields = Array.isArray(schema.secondaryFields)
     ? schema.secondaryFields
     : [
         { label: 'PARTICIPANT', key: 'runner_name' },
@@ -69,7 +72,7 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
 
   const barcodeFormat = schema.barcodeFormat || 'QR';
   const bibValue = resolveVal('bib', '1042');
-  const barcodeAltText = schema.barcodeAltText
+  const barcodeAltText = schema.barcodeAltText !== undefined
     ? schema.barcodeAltText.replace('{{bib}}', bibValue)
     : `BIB #${bibValue} • ${runner.first_name} ${runner.last_name}`;
 
@@ -127,7 +130,7 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
               {primaryField.label}
             </p>
             <p className="text-5xl font-black font-mono tracking-tight text-white my-1">
-              {primaryField.value || resolveVal(primaryField.key || 'bib', '1042')}
+              {primaryField.value ?? resolveVal(primaryField.key || 'bib', '1042')}
             </p>
             <p className="text-xs font-medium text-white/90">
               {runner.first_name} {runner.last_name}
@@ -141,7 +144,7 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
                 {headerField.label}
               </p>
               <p className="font-semibold text-white truncate">
-                {headerField.value || resolveVal(headerField.key || 'wave', 'Wave A')}
+                {headerField.value ?? resolveVal(headerField.key || 'wave', 'Wave A')}
               </p>
             </div>
             {secondaryFields.slice(0, 1).map((f: any, i: number) => (
@@ -150,7 +153,7 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
                   {f.label}
                 </p>
                 <p className="font-semibold text-white truncate">
-                  {f.key === 'runner_name' ? `${runner.first_name} ${runner.last_name}` : (f.value || resolveVal(f.key || 'category', '-'))}
+                  {f.key === 'runner_name' ? `${runner.first_name} ${runner.last_name}` : (f.value ?? resolveVal(f.key || 'category', '-'))}
                 </p>
               </div>
             ))}
@@ -160,7 +163,7 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
                   {secondaryFields[1].label}
                 </p>
                 <p className="font-semibold text-white truncate">
-                  {secondaryFields[1].value || resolveVal(secondaryFields[1].key || 'category', '-')}
+                  {secondaryFields[1].value ?? resolveVal(secondaryFields[1].key || 'category', '-')}
                 </p>
               </div>
             )}

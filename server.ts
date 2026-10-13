@@ -1,3 +1,4 @@
+import { buildWalletWalletPayload, validateTemplateSchema } from './server/walletPayload.ts';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -98,34 +99,13 @@ function normalizeWalletWalletUrl(rawUrl?: string): string {
   return url || 'https://api.walletwallet.dev';
 }
 
-// Derive WalletWallet colorPreset for Free Tier (Non-Pro) from hex or preset name
-function deriveColorPreset(hexOrPreset?: string): 'dark' | 'blue' | 'green' | 'red' | 'purple' | 'orange' {
-  if (!hexOrPreset) return 'dark';
-  const val = hexOrPreset.toLowerCase().trim();
-  if (['dark', 'blue', 'green', 'red', 'purple', 'orange'].includes(val)) {
-    return val as any;
-  }
-  if (!val.startsWith('#')) return 'dark';
-  const hex = val.replace('#', '');
-  if (hex.length !== 6 && hex.length !== 3) return 'dark';
-  const r = parseInt(hex.length === 3 ? hex[0] + hex[0] : hex.slice(0, 2), 16);
-  const g = parseInt(hex.length === 3 ? hex[1] + hex[1] : hex.slice(2, 4), 16);
-  const b = parseInt(hex.length === 3 ? hex[2] + hex[2] : hex.slice(4, 6), 16);
-
-  if (g > 100 && g > r * 1.2 && g > b * 1.1) return 'green';
-  if (b > 120 && b > r * 1.1 && b > g) return 'blue';
-  if (r > 120 && r > g * 1.5 && r > b * 1.5) return 'red';
-  if (r > 100 && b > 100 && g < Math.min(r, b) * 0.8) return 'purple';
-  if (r > 150 && g > 80 && g < r && b < 60) return 'orange';
-  return 'dark';
-}
-
 // Call WalletWallet API (https://www.walletwallet.dev/docs)
 // Supports Free tier (up to 1,000 passes/mo, no credit card required) & Pro tier
 async function createWalletWalletPassServer(options: {
   apiKey: string;
   baseUrl: string;
   plan: 'free' | 'pro';
+  fieldMapping?: string | Record<string, string>;
   raceName: string;
   orgName?: string;
   runner: {
@@ -142,6 +122,7 @@ async function createWalletWalletPassServer(options: {
     schema_definition?: string;
     logo_image_url?: string;
     strip_image_url?: string;
+    background_image_url?: string;
   };
 }): Promise<{
   success: boolean;
@@ -157,67 +138,12 @@ async function createWalletWalletPassServer(options: {
     return { success: false, error: 'WALLETWALLET_API_KEY not configured', tierUsed: plan };
   }
 
-  let dyn: Record<string, any> = {};
-  if (typeof runner.dynamic_data === 'string') {
-    try { dyn = JSON.parse(runner.dynamic_data); } catch { dyn = {}; }
-  } else if (runner.dynamic_data && typeof runner.dynamic_data === 'object') {
-    dyn = runner.dynamic_data;
-  }
-
-  const bibNumber = String(dyn.bib || dyn.bib_number || runner.id.replace('run-', '').slice(0, 8).toUpperCase());
-  const division = String(dyn.category || dyn.division || dyn.race_division || 'General');
-  const wave = String(dyn.wave || dyn.start_wave || 'Open');
-  const emergency = String(dyn.emergency_contact || 'None listed');
-
-  let tplSchema: any = {};
-  if (template?.schema_definition) {
-    try { tplSchema = JSON.parse(template.schema_definition); } catch {}
-  }
-
   const baseEndpoint = normalizeWalletWalletUrl(baseUrl);
-  const chosenColorPreset = tplSchema.colorPreset || deriveColorPreset(template?.background_color) || 'dark';
-
-  // Common fields (accepted in ALL tiers, strictly per walletwallet.dev docs)
-  const body: any = {
-    barcodeValue: bibNumber,
-    barcodeFormat: tplSchema.barcodeFormat || 'QR',
-    barcodeAltText: tplSchema.barcodeAltText
-      ? tplSchema.barcodeAltText.replace('{{bib}}', bibNumber)
-      : `BIB #${bibNumber}`,
-    logoText: (tplSchema.logoText || raceName || 'Athletic Pass').slice(0, 64),
-    description: (tplSchema.description || `${raceName} Participant Pass`).slice(0, 128),
-    organizationName: (tplSchema.organizationName || orgName || '3F Striders').slice(0, 64),
-    sharingProhibited: tplSchema.sharingProhibited !== undefined ? Boolean(tplSchema.sharingProhibited) : false,
-    colorPreset: chosenColorPreset,
-    primaryFields: [
-      { label: tplSchema.primaryFields?.[0]?.label || 'BIB NUMBER', value: bibNumber },
-    ],
-    secondaryFields: [
-      { label: tplSchema.secondaryFields?.[0]?.label || 'PARTICIPANT', value: `${runner.first_name} ${runner.last_name}`.slice(0, 64) },
-      { label: tplSchema.secondaryFields?.[1]?.label || 'DIVISION', value: division.slice(0, 64) },
-    ],
-    headerFields: [
-      { label: tplSchema.headerFields?.[0]?.label || 'WAVE', value: wave.slice(0, 64) },
-    ],
-    backFields: (tplSchema.backFields && Array.isArray(tplSchema.backFields) && tplSchema.backFields.length > 0)
-      ? tplSchema.backFields.map((f: any) => ({
-          label: f.label || 'Information',
-          value: f.value || (f.key === 'email' ? runner.email : f.key === 'emergency_contact' ? emergency : 'Present pass at check-in.'),
-        }))
-      : [
-          { label: 'Emergency Contact', value: emergency.slice(0, 256) },
-          { label: 'Runner Email', value: runner.email.slice(0, 128) },
-          { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
-        ],
-  };
-
-  if (plan === 'pro' && template?.background_color && template.background_color.startsWith('#')) {
-    body.color = template.background_color;
-  }
 
   const cleanApiKey = apiKey.trim().replace(/^Bearer\s+/i, '');
 
   try {
+    const body = buildWalletWalletPayload({ runner, template, raceName, orgName, plan, fieldMapping: options.fieldMapping });
     const res = await fetch(`${baseEndpoint}/api/passes`, {
       method: 'POST',
       headers: {
@@ -229,34 +155,6 @@ async function createWalletWalletPassServer(options: {
 
     const resJson: any = await res.json().catch(() => ({}));
     if (!res.ok) {
-      if (plan === 'pro') {
-        const fallbackBody = { ...body };
-        delete fallbackBody.color;
-        delete fallbackBody.logoURL;
-        delete fallbackBody.stripURL;
-        fallbackBody.colorPreset = deriveColorPreset(template?.background_color);
-
-        const retry = await fetch(`${baseEndpoint}/api/passes`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${cleanApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(fallbackBody),
-        });
-        const retryJson: any = await retry.json().catch(() => ({}));
-        if (retry.ok && retryJson.serialNumber) {
-          return {
-            success: true,
-            serialNumber: retryJson.serialNumber,
-            googleSaveUrl: retryJson.googleSaveUrl,
-            applePass: retryJson.applePass,
-            shareUrl: retryJson.shareUrl,
-            tierUsed: 'free',
-          };
-        }
-      }
-
       return {
         success: false,
         error: resJson.error || resJson.message || `WalletWallet returned HTTP ${res.status}`,
@@ -307,25 +205,21 @@ app.put('/api/runner/update', async (req, res) => {
     const updatedRunner = d1Db.updateRunner(runner_id, updates);
     const pass = d1Db.getPassByRunnerId(runner_id);
 
-    // Call walletwallet.dev PUT endpoint ONLY IF Pro plan is active
-    if (d1Db.settings.walletwalletApiKey && d1Db.settings.walletwalletPlan === 'pro' && pass?.walletwallet_pass_id && !pass.walletwallet_pass_id.startsWith('ww_run-')) {
-      try {
-        const baseUrl = normalizeWalletWalletUrl(d1Db.settings.walletwalletApiUrl);
-        await fetch(`${baseUrl}/api/passes/${pass.walletwallet_pass_id}`, {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${d1Db.settings.walletwalletApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            fields: dynamic_data,
-            first_name,
-            last_name,
-          }),
-        });
-      } catch (err) {
-        console.warn('walletwallet.dev PUT notice:', err);
+    let providerUpdated = false;
+    if (d1Db.settings.walletwalletApiKey && pass?.status === 'issued' && pass.walletwallet_pass_id && !pass.walletwallet_pass_id.startsWith('ww_run-') && updatedRunner) {
+      const race = d1Db.getRaceById(updatedRunner.race_id);
+      const template = race ? d1Db.getTemplateById(race.template_id) : undefined;
+      const response = await fetch(`${normalizeWalletWalletUrl(d1Db.settings.walletwalletApiUrl)}/api/passes/${pass.walletwallet_pass_id}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${d1Db.settings.walletwalletApiKey.trim().replace(/^Bearer\s+/i, '')}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildWalletWalletPayload({ runner: updatedRunner, template, raceName: race?.name || 'Athletic Event',
+          fieldMapping: race?.field_mapping, plan: d1Db.settings.walletwalletPlan })),
+      });
+      if (!response.ok) {
+        const error: any = await response.json().catch(() => ({}));
+        return res.status(502).json({ success: false, error: error.error || 'WalletWallet update failed', data: { runner: updatedRunner } });
       }
+      providerUpdated = true;
     }
 
     // Register APNs / FCM push notification log
@@ -346,9 +240,7 @@ app.put('/api/runner/update', async (req, res) => {
         pass,
         pushLog,
       },
-      plan_note: d1Db.settings.walletwalletPlan === 'free'
-        ? 'D1 updated. (WalletWallet live push updates require Pro tier per docs).'
-        : 'D1 & WalletWallet updated.',
+      plan_note: providerUpdated ? 'D1 and WalletWallet updated.' : 'D1 updated; no issued provider pass was available to update.',
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
@@ -599,6 +491,7 @@ app.get('/api/pass/details/:id', async (req, res) => {
         apiKey: d1Db.settings.walletwalletApiKey,
         baseUrl: d1Db.settings.walletwalletApiUrl,
         plan: d1Db.settings.walletwalletPlan,
+        fieldMapping: race?.field_mapping,
         raceName: race?.name || 'Athletic Event',
         orgName: 'Pacific Athletic Series',
         runner: {
@@ -660,7 +553,8 @@ app.post('/api/pass/sync/:id', async (req, res) => {
       apiKey: d1Db.settings.walletwalletApiKey,
       baseUrl: d1Db.settings.walletwalletApiUrl,
       plan: d1Db.settings.walletwalletPlan,
-      raceName: race?.name || 'Athletic Event',
+      fieldMapping: race?.field_mapping,
+        raceName: race?.name || 'Athletic Event',
       orgName: 'Pacific Athletic Series',
       runner: {
         id: runner.id,
@@ -787,21 +681,23 @@ app.post('/api/templates', (req, res) => {
       label_color: label_color || '#38bdf8',
       logo_image_url: logo_image_url || '',
       strip_image_url: strip_image_url || '',
-      schema_definition: typeof schema_definition === 'string' ? schema_definition : JSON.stringify(schema_definition || {}),
+      schema_definition: JSON.stringify(validateTemplateSchema(schema_definition ?? {})),
     });
     return res.json({ success: true, data: template });
   } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(400).json({ success: false, error: error.message });
   }
 });
 
 app.put('/api/templates/:id', (req, res) => {
   try {
-    const updated = d1Db.updateTemplate(req.params.id, req.body);
+    const body = { ...req.body };
+    if (body.schema_definition !== undefined) body.schema_definition = JSON.stringify(validateTemplateSchema(body.schema_definition));
+    const updated = d1Db.updateTemplate(req.params.id, body);
     if (!updated) return res.status(404).json({ success: false, error: 'Template not found' });
     return res.json({ success: true, data: updated });
   } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(400).json({ success: false, error: error.message });
   }
 });
 
@@ -969,6 +865,7 @@ app.post('/api/runner/create', async (req, res) => {
         apiKey: d1Db.settings.walletwalletApiKey,
         baseUrl: d1Db.settings.walletwalletApiUrl,
         plan: d1Db.settings.walletwalletPlan,
+        fieldMapping: race?.field_mapping,
         raceName: race?.name || 'Athletic Event',
         orgName: 'Pacific Athletic Series',
         runner: {

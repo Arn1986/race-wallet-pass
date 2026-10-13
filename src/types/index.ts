@@ -91,24 +91,17 @@ export const WALLET_COLOR_PRESETS: Record<WalletColorPreset, WalletColorPresetCo
 export function getWalletColorPreset(presetOrHex?: string): WalletColorPresetConfig {
   if (!presetOrHex) return WALLET_COLOR_PRESETS.dark;
   const normalized = presetOrHex.toLowerCase().trim();
-  if (normalized in WALLET_COLOR_PRESETS) {
-    return WALLET_COLOR_PRESETS[normalized as WalletColorPreset];
-  }
-  // If hex string passed, detect closest preset
-  if (normalized.startsWith('#')) {
-    const hex = normalized.replace('#', '');
-    if (hex.length === 6 || hex.length === 3) {
-      const r = parseInt(hex.length === 3 ? hex[0] + hex[0] : hex.slice(0, 2), 16);
-      const g = parseInt(hex.length === 3 ? hex[1] + hex[1] : hex.slice(2, 4), 16);
-      const b = parseInt(hex.length === 3 ? hex[2] + hex[2] : hex.slice(4, 6), 16);
-      if (b > r && b > g) return WALLET_COLOR_PRESETS.blue;
-      if (g > r && g > b) return WALLET_COLOR_PRESETS.green;
-      if (r > g && r > b && g < 80) return WALLET_COLOR_PRESETS.red;
-      if (r > 80 && b > 80 && g < 80) return WALLET_COLOR_PRESETS.purple;
-      if (r > 150 && g > 80 && g < r && b < 60) return WALLET_COLOR_PRESETS.orange;
-    }
-  }
-  return WALLET_COLOR_PRESETS.dark;
+  if (Object.hasOwn(WALLET_COLOR_PRESETS, normalized)) return WALLET_COLOR_PRESETS[normalized as WalletColorPreset];
+  if (!/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/.test(normalized)) return WALLET_COLOR_PRESETS.dark;
+  const expanded = normalized.length === 4 ? '#' + normalized.slice(1).split('').map(c => c + c).join('') : normalized;
+  const exact = Object.values(WALLET_COLOR_PRESETS).find(p => p.bgHex.toLowerCase() === expanded);
+  if (exact) return exact;
+  const rgb = (hex: string) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+  const target = rgb(expanded);
+  return Object.values(WALLET_COLOR_PRESETS).reduce((best, preset) => {
+    const distance = (p: WalletColorPresetConfig) => rgb(p.bgHex).reduce((sum, n, i) => sum + (n - target[i]) ** 2, 0);
+    return distance(preset) < distance(best) ? preset : best;
+  }, WALLET_COLOR_PRESETS.dark);
 }
 
 export interface WalletWalletField {

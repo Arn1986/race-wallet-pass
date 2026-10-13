@@ -195,3 +195,81 @@ test('organizer link creation and explicit sync use private storage and recipien
     assert.deepEqual(new Uint8Array(await apple.arrayBuffer()), signedBytes);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('Studio template create/save round-trip and immediate issuance preserve every selected preset', async () => {
+  const f = fixture(), originalFetch = globalThis.fetch;
+  let captured: any;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('api.walletwallet.dev')) {
+      captured = JSON.parse(String(init?.body));
+      return Response.json({ serialNumber: crypto.randomUUID(), applePass: signedBase64, googleSaveUrl: 'https://pay.google.com/gp/v/save/test' });
+    }
+    return Response.json({ id: 'email-id' });
+  };
+  try {
+    const templateResponse = await worker.fetch(new Request('https://example.com/api/templates', { method: 'POST', body: JSON.stringify({
+      name: 'Studio Template', background_color: '#064e3b', schema_definition: JSON.stringify({ colorPreset: 'green', logoText: 'Studio Title',
+        primaryFields: [{ label: 'ENTRY', key: 'bib' }], backFields: [{ label: 'EMAIL', key: 'email', value: 'sample@example.com' }] }),
+    }) }), f.env, context);
+    const created: any = await templateResponse.json();
+    assert.equal(templateResponse.status, 200);
+    f.sqlite.prepare('UPDATE Races SET template_id = ?').run(created.data.id);
+    for (const preset of ['dark', 'blue', 'green', 'red', 'purple', 'orange']) {
+      const schema = { ...JSON.parse(created.data.schema_definition), colorPreset: preset };
+      const saved = await worker.fetch(new Request(`https://example.com/api/templates/${created.data.id}`, { method: 'PUT',
+        body: JSON.stringify({ schema_definition: JSON.stringify(schema) }) }), f.env, context);
+      assert.equal(saved.status, 200);
+      assert.equal(JSON.parse((await saved.json() as any).data.schema_definition).colorPreset, preset);
+      const response = await worker.fetch(new Request('https://example.com/api/runner/create', { method: 'POST', body: JSON.stringify({
+        race_id: 'race', email: `${preset}@example.com`, first_name: 'Test', last_name: 'Runner', dynamic_data: { bib: '55' },
+      }) }), f.env, context);
+      assert.equal((await response.json() as any).data.walletwallet_delivery.success, true);
+      assert.equal(captured.colorPreset, preset); assert.equal(captured.logoText, 'Studio Title');
+      assert.equal(captured.primaryFields[0].label, 'ENTRY'); assert.equal(captured.primaryFields[0].value, '55');
+      assert.equal(captured.backFields[0].value, `${preset}@example.com`); assert.equal(captured.color, undefined);
+    }
+    const partial = await worker.fetch(new Request(`https://example.com/api/templates/${created.data.id}`, { method: 'PUT', body: JSON.stringify({ name: 'Renamed' }) }), f.env, context);
+    assert.equal(JSON.parse((await partial.json() as any).data.schema_definition).colorPreset, 'orange');
+    const invalid = await worker.fetch(new Request('https://example.com/api/templates', { method: 'POST', body: JSON.stringify({ name: 'Invalid', schema_definition: '{broken' }) }), f.env, context);
+    assert.equal(invalid.status, 400);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('queued issuance and live PUT retain the same full Studio spec on the Free plan', async () => {
+  const f = fixture(), originalFetch = globalThis.fetch;
+  f.sqlite.exec("UPDATE Passes SET status = 'pending'");
+  f.sqlite.prepare('UPDATE Templates SET schema_definition = ?').run(JSON.stringify({ colorPreset: 'purple', logoText: 'Template title',
+    primaryFields: [{ label: 'BIB', key: 'bib', changeMessage: 'Bib is now %@' }], barcodeAltText: '' }));
+  let createBody: any, updateBody: any;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('api.walletwallet.dev')) {
+      const body = JSON.parse(String(init?.body));
+      if (init?.method === 'PUT') { updateBody = body; return Response.json({ unchanged: false }); }
+      createBody = body;
+      return Response.json({ serialNumber: 'ww-real', applePass: signedBase64, googleSaveUrl: 'https://pay.google.com/gp/v/save/test' });
+    }
+    return Response.json({ id: 'email-id' });
+  };
+  try {
+    await worker.queue({ messages: [{ body: { runner_id: 'runner', payload: { email: 'runner@example.com' } }, ack() {}, retry() { assert.fail('Queue should succeed'); } }] } as any, f.env);
+    assert.equal(createBody.colorPreset, 'purple');
+    const response = await worker.fetch(new Request('https://example.com/api/runner/update', { method: 'PUT', body: JSON.stringify({
+      runner_id: 'runner', dynamic_data: { bib: 'NEW', wave: 'D' },
+    }) }), f.env, context);
+    assert.equal(response.status, 200); assert.equal(updateBody.colorPreset, 'purple');
+    assert.equal(updateBody.logoText, 'Template title'); assert.equal(updateBody.primaryFields[0].value, 'NEW');
+    assert.equal(updateBody.primaryFields[0].changeMessage, 'Bib is now %@'); assert.equal(updateBody.barcodeAltText, '');
+    assert.equal(updateBody.fields, undefined); assert.equal(updateBody.first_name, undefined);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('provider validation errors never retry with a different preset', async () => {
+  const f = fixture(), originalFetch = globalThis.fetch;
+  f.sqlite.exec("INSERT INTO SystemSettings(key,value) VALUES ('walletwalletPlan','pro')");
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return Response.json({ error: 'Invalid provider setting' }, { status: 400 }); };
+  try {
+    const response = await worker.fetch(new Request('https://example.com/api/pass/sync/runner', { method: 'POST' }), f.env, context);
+    assert.equal(response.status, 502); assert.equal(calls, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});

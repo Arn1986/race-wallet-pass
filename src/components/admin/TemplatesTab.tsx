@@ -1,3 +1,4 @@
+import { buildWalletWalletPayload } from '../../../server/walletPayload.ts';
 import React, { useState, useEffect } from 'react';
 import { 
   PassTemplate, 
@@ -67,12 +68,13 @@ export const TemplatesTab: React.FC = () => {
 
   // Back fields
   const [backFields, setBackFields] = useState<WalletWalletField[]>([
-    { label: 'Emergency Contact', key: 'emergency_contact', value: 'Maria Caisip (+1 415-555-0199)' },
-    { label: 'Runner Email', key: 'email', value: 'arnoldcaisip@gmail.com' },
+    { label: 'Emergency Contact', key: 'emergency_contact' },
+    { label: 'Runner Email', key: 'email' },
     { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
   ]);
 
   const [sharingProhibited, setSharingProhibited] = useState(false);
+  const [loadedSchema, setLoadedSchema] = useState<Record<string, any>>({});
 
   const fetchTemplates = async () => {
     try {
@@ -94,6 +96,7 @@ export const TemplatesTab: React.FC = () => {
   };
 
   const handleStartNewTemplate = () => {
+    setLoadedSchema({});
     setIsCreatingNew(true);
     setSelectedId('');
     setName('New Race Pass');
@@ -112,8 +115,8 @@ export const TemplatesTab: React.FC = () => {
     setSec2Label('DIVISION');
     setSec2Key('category');
     setBackFields([
-      { label: 'Emergency Contact', key: 'emergency_contact', value: 'Maria Caisip (+1 415-555-0199)' },
-      { label: 'Runner Email', key: 'email', value: 'arnoldcaisip@gmail.com' },
+      { label: 'Emergency Contact', key: 'emergency_contact' },
+      { label: 'Runner Email', key: 'email' },
       { label: 'Official Rules', value: 'Present QR at start chute check-in and finish village medal chute.' },
     ]);
     setSharingProhibited(false);
@@ -126,53 +129,30 @@ export const TemplatesTab: React.FC = () => {
     setName(tpl.name);
     setSaveError(null);
 
-    try {
-      const s = JSON.parse(tpl.schema_definition || '{}');
-      if (s.organizationName) setOrganizationName(s.organizationName);
-      if (s.logoText) setLogoText(s.logoText);
-      else setLogoText(tpl.name);
-      if (s.description) setDescription(s.description);
-      
-      // Determine preset: either explicitly from schema or derived from background_color
-      const presetConfig = getWalletColorPreset(s.colorPreset || tpl.background_color);
-      setColorPreset(presetConfig.id);
-
-      if (s.barcodeFormat) setBarcodeFormat(s.barcodeFormat);
-      else if (s.barcodeType === 'PKBarcodeFormatCode128') setBarcodeFormat('Code128');
-      else setBarcodeFormat('QR');
-
-      if (s.barcodeAltText) setBarcodeAltText(s.barcodeAltText);
-
-      if (s.headerFields && s.headerFields.length > 0) {
-        setHeaderLabel(s.headerFields[0].label || 'WAVE');
-        setHeaderKey(s.headerFields[0].key || 'wave');
-      }
-
-      if (s.primaryFields && s.primaryFields.length > 0) {
-        setPrimaryLabel(s.primaryFields[0].label || 'BIB NUMBER');
-        setPrimaryKey(s.primaryFields[0].key || 'bib');
-      }
-
-      if (s.secondaryFields && s.secondaryFields.length > 0) {
-        setSec1Label(s.secondaryFields[0]?.label || 'PARTICIPANT');
-        setSec1Key(s.secondaryFields[0]?.key || 'runner_name');
-        if (s.secondaryFields.length > 1) {
-          setSec2Label(s.secondaryFields[1]?.label || 'DIVISION');
-          setSec2Key(s.secondaryFields[1]?.key || 'category');
-        }
-      }
-
-      if (s.backFields && Array.isArray(s.backFields) && s.backFields.length > 0) {
-        setBackFields(s.backFields);
-      }
-
-      if (s.sharingProhibited !== undefined) {
-        setSharingProhibited(Boolean(s.sharingProhibited));
-      }
-    } catch {
-      // Fallback
-      setColorPreset(getWalletColorPreset(tpl.background_color).id);
-    }
+    let schema: any = {};
+    try { schema = JSON.parse(tpl.schema_definition || '{}'); } catch {}
+    if (!schema || typeof schema !== 'object' || Array.isArray(schema)) schema = {};
+    setLoadedSchema(schema);
+    setOrganizationName(schema.organizationName ?? '3F Striders');
+    setLogoText(schema.logoText ?? tpl.name);
+    setDescription(schema.description ?? 'Official Participant Digital Pass');
+    setColorPreset(getWalletColorPreset(schema.colorPreset || tpl.background_color).id);
+    setBarcodeFormat(schema.barcodeFormat ?? ({ PKBarcodeFormatCode128: 'Code128', PKBarcodeFormatPDF417: 'PDF417', PKBarcodeFormatAztec: 'Aztec' } as any)[schema.barcodeType] ?? 'QR');
+    setBarcodeAltText(schema.barcodeAltText ?? 'BIB #{{bib}}');
+    setHeaderLabel(schema.headerFields?.[0]?.label ?? 'WAVE');
+    setHeaderKey(schema.headerFields?.[0] ? schema.headerFields[0].key ?? '' : 'wave');
+    setPrimaryLabel(schema.primaryFields?.[0]?.label ?? 'BIB NUMBER');
+    setPrimaryKey(schema.primaryFields?.[0] ? schema.primaryFields[0].key ?? '' : 'bib');
+    setSec1Label(schema.secondaryFields?.[0]?.label ?? 'PARTICIPANT');
+    setSec1Key(schema.secondaryFields?.[0] ? schema.secondaryFields[0].key ?? '' : 'runner_name');
+    setSec2Label(schema.secondaryFields?.[1]?.label ?? 'DIVISION');
+    setSec2Key(schema.secondaryFields?.[1] ? schema.secondaryFields[1].key ?? '' : 'category');
+    setBackFields(Array.isArray(schema.backFields) ? schema.backFields : [
+      { label: 'Emergency Contact', key: 'emergency_contact' },
+      { label: 'Runner Email', key: 'email' },
+      { label: 'Official Rules', value: 'Present QR at check-in.' },
+    ]);
+    setSharingProhibited(schema.sharingProhibited ?? false);
   };
 
   useEffect(() => {
@@ -200,6 +180,26 @@ export const TemplatesTab: React.FC = () => {
     setBackFields(updated);
   };
 
+  const makeSchema = () => {
+    const { color: _legacyCustomColor, ...preserved } = loadedSchema;
+    return {
+      ...preserved,
+      organizationName: organizationName.trim().slice(0, 64),
+      logoText: logoText.trim().slice(0, 64),
+      description: description.trim().slice(0, 128),
+      colorPreset, barcodeFormat, barcodeAltText,
+      headerFields: [{ ...loadedSchema.headerFields?.[0], label: headerLabel.trim(), key: headerKey.trim() }, ...(loadedSchema.headerFields?.slice(1) || [])],
+      primaryFields: [{ ...loadedSchema.primaryFields?.[0], label: primaryLabel.trim(), key: primaryKey.trim() }, ...(loadedSchema.primaryFields?.slice(1) || [])],
+      secondaryFields: [
+        { ...loadedSchema.secondaryFields?.[0], label: sec1Label.trim(), key: sec1Key.trim() },
+        { ...loadedSchema.secondaryFields?.[1], label: sec2Label.trim(), key: sec2Key.trim() },
+        ...(loadedSchema.secondaryFields?.slice(2) || []),
+      ],
+      backFields: backFields.map(field => ({ ...field, label: String(field.label ?? '').trim(), key: field.key?.trim(), value: field.value === undefined ? undefined : String(field.value).trim() })),
+      sharingProhibited,
+    };
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -209,34 +209,15 @@ export const TemplatesTab: React.FC = () => {
 
       const activeColorPreset = WALLET_COLOR_PRESETS[colorPreset];
 
-      const schemaPayload = {
-        organizationName: organizationName.trim().slice(0, 64),
-        logoText: logoText.trim().slice(0, 64),
-        description: description.trim().slice(0, 128),
-        colorPreset,
-        barcodeFormat,
-        barcodeAltText,
-        headerFields: [{ label: headerLabel.trim(), key: headerKey.trim() }],
-        primaryFields: [{ label: primaryLabel.trim(), key: primaryKey.trim() }],
-        secondaryFields: [
-          { label: sec1Label.trim(), key: sec1Key.trim() },
-          { label: sec2Label.trim(), key: sec2Key.trim() },
-        ],
-        backFields: backFields.map((f) => ({
-          label: f.label.trim(),
-          key: f.key ? f.key.trim() : undefined,
-          value: f.value ? f.value.trim() : undefined,
-        })),
-        sharingProhibited,
-      };
+      const schemaPayload = makeSchema();
 
       const payload = {
         name: name.trim(),
         background_color: activeColorPreset.bgHex,
         text_color: activeColorPreset.textHex,
         label_color: activeColorPreset.labelHex,
-        logo_image_url: '',
-        strip_image_url: '',
+        logo_image_url: templates.find(t => t.id === selectedId)?.logo_image_url || '',
+        strip_image_url: templates.find(t => t.id === selectedId)?.strip_image_url || '',
         schema_definition: JSON.stringify(schemaPayload),
       };
 
@@ -285,24 +266,9 @@ export const TemplatesTab: React.FC = () => {
     background_color: activePresetConfig.bgHex,
     text_color: activePresetConfig.textHex,
     label_color: activePresetConfig.labelHex,
-    logo_image_url: '',
-    strip_image_url: '',
-    schema_definition: JSON.stringify({
-      organizationName,
-      logoText,
-      description,
-      colorPreset,
-      barcodeFormat,
-      barcodeAltText,
-      headerFields: [{ label: headerLabel, key: headerKey }],
-      primaryFields: [{ label: primaryLabel, key: primaryKey }],
-      secondaryFields: [
-        { label: sec1Label, key: sec1Key },
-        { label: sec2Label, key: sec2Key },
-      ],
-      backFields,
-      sharingProhibited,
-    }),
+    logo_image_url: templates.find(t => t.id === selectedId)?.logo_image_url || '',
+    strip_image_url: templates.find(t => t.id === selectedId)?.strip_image_url || '',
+    schema_definition: JSON.stringify(makeSchema()),
     created_at: new Date().toISOString(),
   };
 
@@ -341,26 +307,10 @@ export const TemplatesTab: React.FC = () => {
   };
 
   // Build sample WalletWallet API request payload
-  const sampleWalletWalletPayload = {
-    barcodeValue: '1042',
-    barcodeFormat,
-    barcodeAltText: barcodeAltText.replace('{{bib}}', '1042'),
-    logoText,
-    description,
-    organizationName,
-    colorPreset,
-    sharingProhibited,
-    headerFields: [{ label: headerLabel, value: 'Wave A' }],
-    primaryFields: [{ label: primaryLabel, value: '1042' }],
-    secondaryFields: [
-      { label: sec1Label, value: 'Arnold Caisip' },
-      { label: sec2Label, value: 'Full Marathon (42.2K)' },
-    ],
-    backFields: backFields.map((f) => ({
-      label: f.label,
-      value: f.value || (f.key === 'email' ? 'arnoldcaisip@gmail.com' : 'Maria Caisip (+1 415-555-0199)'),
-    })),
-  };
+  const sampleWalletWalletPayload = buildWalletWalletPayload({
+    runner: previewRunner, template: previewTemplate, raceName: previewRace.name,
+    fieldMapping: previewRace.field_mapping, plan: 'pro',
+  });
 
   return (
     <div className="space-y-6">
@@ -521,7 +471,7 @@ export const TemplatesTab: React.FC = () => {
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400 leading-snug">
-                  WalletWallet passes use verified contrast-safe color presets to guarantee readability and acceptance on Apple Wallet and Google Wallet.
+                  All plans support these colorPreset values. Preview shades are illustrative; WalletWallet controls the installed preset colors. Custom hex color requires Pro.
                 </p>
 
                 {/* 6 Preset Buttons */}
@@ -782,9 +732,18 @@ export const TemplatesTab: React.FC = () => {
                         />
                         <input
                           type="text"
-                          value={field.value || field.key || ''}
+                          value={field.key || ''}
+                          onChange={(e) => handleUpdateBackField(idx, 'key', e.target.value)}
+                          placeholder="Participant data key (e.g. email)"
+                          aria-label={`Back field ${idx + 1} participant data key`}
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 text-xs outline-none"
+                        />
+                        <input
+                          type="text"
+                          value={field.value || ''}
                           onChange={(e) => handleUpdateBackField(idx, 'value', e.target.value)}
-                          placeholder="Default Value or mapped key"
+                          placeholder="Static value (used when data key is empty)"
+                          aria-label={`Back field ${idx + 1} static value`}
                           className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 text-xs outline-none"
                         />
                       </div>

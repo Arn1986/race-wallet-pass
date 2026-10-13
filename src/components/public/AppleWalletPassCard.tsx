@@ -1,3 +1,4 @@
+import { buildWalletWalletPayload } from '../../../server/walletPayload.ts';
 import React, { useState } from 'react';
 import { Runner, PassTemplate, Race, Pass, getWalletColorPreset } from '../../types/index.ts';
 import { QrCode, RotateCw, ShieldAlert, Sparkles, CheckCircle2, AlertTriangle, Info, Barcode } from 'lucide-react';
@@ -61,6 +62,8 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
     return fallback;
   };
 
+  schema = { ...schema, ...buildWalletWalletPayload({ runner, template, raceName: race.name, fieldMapping: race.field_mapping, plan: 'pro' }) };
+
   const isRevoked = pass?.status === 'revoked';
 
   // Derive WalletWallet Color Preset styling
@@ -74,14 +77,14 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
   const headerField = schema.headerFields?.[0] || { label: 'WAVE', key: 'wave' };
   const primaryField = schema.primaryFields?.[0] || { label: 'BIB NUMBER', key: 'bib' };
   
-  const secondaryFields = (schema.secondaryFields && schema.secondaryFields.length > 0)
+  const secondaryFields = Array.isArray(schema.secondaryFields)
     ? schema.secondaryFields
     : [
         { label: 'PARTICIPANT', key: 'runner_name' },
         { label: 'DIVISION', key: 'category' },
       ];
 
-  const backFields = (schema.backFields && schema.backFields.length > 0)
+  const backFields = Array.isArray(schema.backFields)
     ? schema.backFields
     : [
         { label: 'Emergency Contact', key: 'emergency_contact', value: resolveVal('emergency_contact', 'Maria Caisip (+1 415-555-0199)') },
@@ -91,7 +94,7 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
 
   const barcodeFormat = schema.barcodeFormat || 'QR';
   const bibValue = resolveVal('bib', '1042');
-  const barcodeAltText = schema.barcodeAltText
+  const barcodeAltText = schema.barcodeAltText !== undefined
     ? schema.barcodeAltText.replace('{{bib}}', bibValue)
     : `BIB #${bibValue} • ${runner.first_name} ${runner.last_name}`;
 
@@ -138,7 +141,7 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
                   {headerField.label}
                 </p>
                 <p className="text-xs font-bold leading-tight">
-                  {headerField.value || resolveVal(headerField.key || 'wave', 'Wave A')}
+                  {headerField.value ?? resolveVal(headerField.key || 'wave', 'Wave A')}
                 </p>
               </div>
 
@@ -168,7 +171,7 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
               {primaryField.label}
             </p>
             <p className="text-5xl sm:text-6xl font-black tracking-tight leading-none font-mono my-2 drop-shadow">
-              {primaryField.value || resolveVal(primaryField.key || 'bib', '1042')}
+              {primaryField.value ?? resolveVal(primaryField.key || 'bib', '1042')}
             </p>
             <span className="inline-block text-[10px] font-mono uppercase bg-black/30 px-2.5 py-0.5 rounded-full border border-white/10 text-white/80">
               {pass?.status === 'issued' ? 'Official Wallet Pass' : 'Ready to Install'}
@@ -180,7 +183,7 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
             {secondaryFields.slice(0, 2).map((field: any, idx: number) => {
               const val = field.key === 'runner_name'
                 ? `${runner.first_name} ${runner.last_name}`
-                : (field.value || resolveVal(field.key || 'category', '-'));
+                : (field.value ?? resolveVal(field.key || 'category', '-'));
               return (
                 <div key={idx} className={idx === 1 ? 'text-right' : 'text-left'}>
                   <p className="text-[9px] uppercase font-bold tracking-wider truncate" style={{ color: preset.labelHex }}>
@@ -262,7 +265,7 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
 
             {/* Configured WalletWallet Back Fields */}
             {backFields.map((field: any, idx: number) => {
-              const val = field.value || resolveVal(field.key, 'Contact organizer staff.');
+              const val = field.value ?? resolveVal(field.key, 'Contact organizer staff.');
               return (
                 <div key={idx} className="border-b border-white/10 pb-2.5">
                   <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: preset.labelHex }}>
