@@ -614,6 +614,7 @@ export default {
               label_color = COALESCE(?, label_color),
               logo_image_url = COALESCE(?, logo_image_url),
               strip_image_url = COALESCE(?, strip_image_url),
+              background_image_url = CASE WHEN ? THEN '' ELSE background_image_url END,
               schema_definition = COALESCE(?, schema_definition)
           WHERE id = ?
         `).bind(
@@ -623,6 +624,7 @@ export default {
           label_color || null,
           logo_image_url !== undefined ? logo_image_url : null,
           strip_image_url !== undefined ? strip_image_url : null,
+          schemaStr && Object.hasOwn(JSON.parse(schemaStr), 'backgroundURL') ? 1 : 0,
           schemaStr || null,
           templateId
         ).run();

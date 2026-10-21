@@ -125,7 +125,7 @@ export const AppleWalletPassCard: React.FC<AppleWalletPassCardProps> = ({
           <div className="px-5 pt-4 pb-3 flex items-start justify-between border-b border-white/10 relative z-10">
             <div className="flex items-center space-x-2.5 overflow-hidden pr-2">
               <div className="w-7 h-7 rounded-lg overflow-hidden bg-white/10 flex-shrink-0 flex items-center justify-center p-1 border border-white/10">
-                <Sparkles className="w-3.5 h-3.5 text-white/90" />
+                <>{schema.logoURL ? <img src={schema.logoURL} alt="Pass logo" referrerPolicy="no-referrer" className="w-full h-full object-contain" /> : <Sparkles className="w-3.5 h-3.5 text-white/90" />}</>
               </div>
               <div className="min-w-0">
                 <p className="text-[10px] uppercase font-bold tracking-wider truncate" style={{ color: preset.labelHex }}>

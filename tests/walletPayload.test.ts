@@ -47,9 +47,9 @@ test('race CSV mappings, blank labels, hidden alt text and intentionally empty a
 
 test('paid wire fields are explicit and use documented case-sensitive names', () => {
   const body = build({ colorPreset: 'purple', color: '#123456' }, 'pro', {
-    logo_image_url: 'https://example.com/logo.png', strip_image_url: 'data:image/png;base64,UEs=', background_image_url: 'https://example.com/background.png' });
+    logo_image_url: 'https://example.com/logo.png', strip_image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1kAAAAASUVORK5CYII=', background_image_url: 'https://example.com/background.png' });
   assert.equal(body.color, '#123456'); assert.equal(body.logoURL, 'https://example.com/logo.png');
-  assert.equal(body.stripURL, 'data:image/png;base64,UEs='); assert.equal(body.backgroundURL, 'https://example.com/background.png');
+  assert.equal(body.stripURL, 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1kAAAAASUVORK5CYII='); assert.equal(body.backgroundURL, 'https://example.com/background.png');
   assert.equal(body.backgroundColor, undefined); assert.equal(body.text_color, undefined);
   assert.throws(() => build({ color: '#123456' }), /requires WalletWallet Pro/);
   assert.throws(() => build({}, 'free', { logo_image_url: 'https://example.com/logo.png' }), /logoURL requires/);
@@ -62,4 +62,41 @@ test('invalid schema input is rejected instead of silently issuing another desig
     assert.throws(() => validateTemplateSchema(raw));
   }
   assert.equal(validateTemplateSchema({ sharingProhibited: false, barcodeAltText: '' }).sharingProhibited, false);
+});
+
+const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1kAAAAASUVORK5CYII=';
+
+test('sharingProhibited is an explicit template boolean for both values', () => {
+  assert.equal(build({ sharingProhibited: true }).sharingProhibited, true);
+  assert.equal(build({ sharingProhibited: false }).sharingProhibited, false);
+  assert.throws(() => validateTemplateSchema({ sharingProhibited: 'false' }), /boolean/);
+});
+
+test('all four optional image fields accept HTTPS or PNG, and blank fields keep Free working', () => {
+  const fields = ['logoURL', 'iconURL', 'thumbnailURL', 'backgroundURL'];
+  for (const field of fields) {
+    const url = `https://example.com/${field}.png`;
+    assert.equal(build({ [field]: url }, 'pro')[field], url);
+    assert.equal(build({ [field]: png }, 'pro')[field], png);
+    assert.throws(() => build({ [field]: url }), /requires WalletWallet Pro or Business/);
+    assert.equal(build({ [field]: '' })[field], undefined);
+    assert.equal(build({ [field]: '   ' })[field], undefined);
+    assert.throws(() => validateTemplateSchema({ [field]: 'http://example.com/image.png' }), /HTTPS/);
+    assert.throws(() => validateTemplateSchema({ [field]: 'data:image/svg+xml,<svg/>' }), /PNG/);
+    assert.throws(() => validateTemplateSchema({ [field]: 'data:image/png;base64,UEs=' }), /not a PNG/);
+  }
+  const schema = Object.fromEntries(fields.map(field => [field, png]));
+  const spec = build({ ...schema, sharingProhibited: true }, 'pro');
+  for (const field of fields) assert.equal(spec[field], png);
+  const free = build({ logoURL: '', backgroundURL: '' }, 'free', {
+    logo_image_url: 'https://example.com/old-logo.png', background_image_url: 'https://example.com/old-background.png',
+  });
+  assert.equal(free.logoURL, undefined); assert.equal(free.backgroundURL, undefined);
+});
+
+test('image limits reject oversized files and combined templates before a provider call', () => {
+  const huge = 'data:image/png;base64,' + Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), Buffer.alloc(1_000_000)]).toString('base64');
+  assert.throws(() => validateTemplateSchema({ logoURL: huge }), /1 MB/);
+  const medium = 'data:image/png;base64,' + Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), Buffer.alloc(700_000)]).toString('base64');
+  assert.throws(() => validateTemplateSchema({ logoURL: medium, backgroundURL: medium }), /Combined template artwork/);
 });

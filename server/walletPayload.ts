@@ -1,3 +1,4 @@
+import { ARTWORK_FIELDS, getTemplateArtwork, normalizeArtwork, MAX_TEMPLATE_BYTES } from './templateArtwork.ts';
 import { getWalletColorPreset, WALLET_COLOR_PRESETS } from '../src/types/index.ts';
 
 export interface WalletPayloadOptions {
@@ -6,7 +7,7 @@ export interface WalletPayloadOptions {
   raceName: string;
   orgName?: string;
   fieldMapping?: string | Record<string, string>;
-  plan?: 'free' | 'pro';
+  plan?: 'free' | 'pro' | 'business';
 }
 
 function record(value: any): Record<string, any> {
@@ -45,6 +46,10 @@ export function validateTemplateSchema(raw: any): Record<string, any> {
         throw new Error(`${name}.value must be text, a number, or a boolean`);
       }
     }
+  }
+  for (const field of ARTWORK_FIELDS) if (schema[field] !== undefined) normalizeArtwork(schema[field], field);
+  if (new TextEncoder().encode(JSON.stringify(schema)).byteLength > MAX_TEMPLATE_BYTES) {
+    throw new Error('Combined template artwork is too large. Use smaller PNGs or HTTPS URLs (maximum 1.8 MB encoded template).');
   }
   return schema;
 }
@@ -101,15 +106,21 @@ export function buildWalletWalletPayload(options: WalletPayloadOptions): Record<
   // Choosing a preset must not also send a preview hex as `color`: that overrides the preset.
   // Custom color is opt-in, separately stored as schema.color, and requires a paid plan.
   if (schema.color !== undefined) {
-    if (plan !== 'pro') throw new Error('Custom color requires WalletWallet Pro; select a colorPreset on Free');
+    if (plan !== 'pro' && plan !== 'business') throw new Error('Custom color requires WalletWallet Pro; select a colorPreset on Free');
     body.color = schema.color;
   }
-  for (const [wire, column] of [['logoURL', 'logo_image_url'], ['stripURL', 'strip_image_url'], ['backgroundURL', 'background_image_url']] as const) {
-    const image = (template as any)?.[column];
+  const artwork = getTemplateArtwork(template);
+  for (const wire of ARTWORK_FIELDS) {
+    const image = normalizeArtwork(artwork[wire], wire);
     if (!image) continue;
-    if (plan !== 'pro') throw new Error(`${wire} requires WalletWallet Pro`);
-    if (!/^https:\/\//i.test(image) && !/^data:image\/png;base64,/i.test(image)) throw new Error(`${wire} must be HTTPS or a PNG data URI`);
+    if (plan !== 'pro' && plan !== 'business') throw new Error(`${wire} requires WalletWallet Pro or Business; leave optional artwork blank on Free`);
     body[wire] = image;
   }
+  const strip = normalizeArtwork(template?.strip_image_url, 'stripURL');
+  if (strip) {
+    if (plan !== 'pro' && plan !== 'business') throw new Error('stripURL requires WalletWallet Pro or Business');
+    body.stripURL = strip;
+  }
+  if (new TextEncoder().encode(JSON.stringify(body)).byteLength > 2_000_000) throw new Error('WalletWallet payload exceeds 2 MB. Use smaller images or HTTPS URLs.');
   return body;
 }

@@ -401,3 +401,37 @@ test('previously saved pending athletes can be explicitly resumed without duplic
   const active = await worker.fetch(request(true), f.env, context);
   assert.equal((await active.json() as any).data.total_enqueued, 0); assert.equal(queued, 1);
 });
+
+test('artwork and sharing flags survive template save/reload and reach immediate provider creation', async () => {
+  const f = fixture(), originalFetch = globalThis.fetch;
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1kAAAAASUVORK5CYII=';
+  f.sqlite.exec("INSERT INTO SystemSettings(key,value) VALUES ('walletwalletPlan','pro')");
+  let body: any;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('api.walletwallet.dev')) {
+      body = JSON.parse(String(init?.body));
+      return Response.json({ serialNumber: crypto.randomUUID(), applePass: signedBase64, googleSaveUrl: 'https://pay.google.com/gp/v/save/test' });
+    }
+    return Response.json({ id: 'email-id' });
+  };
+  try {
+    const artwork = { logoURL: 'https://example.com/logo.png', iconURL: png, thumbnailURL: 'https://example.com/thumb.png', backgroundURL: png };
+    for (const sharingProhibited of [true, false]) {
+      const schema = { ...artwork, sharingProhibited, colorPreset: 'green' };
+      const update = await worker.fetch(new Request('https://example.com/api/templates/tpl', { method: 'PUT', body: JSON.stringify({ schema_definition: JSON.stringify(schema) }) }), f.env, context);
+      assert.equal(update.status, 200);
+      const saved: any = await update.json(); assert.deepEqual(JSON.parse(saved.data.schema_definition), schema);
+      const result = await worker.fetch(new Request('https://example.com/api/runner/create', { method: 'POST', body: JSON.stringify({ race_id: 'race', first_name: 'New', last_name: 'Runner', email: `art-${sharingProhibited}@example.com` }) }), f.env, context);
+      assert.equal((await result.json() as any).data.walletwallet_delivery.success, true);
+      assert.equal(body.sharingProhibited, sharingProhibited);
+      for (const field of Object.keys(artwork)) assert.equal(body[field], artwork[field as keyof typeof artwork]);
+    }
+    const clear = await worker.fetch(new Request('https://example.com/api/templates/tpl', { method: 'PUT', body: JSON.stringify({ logo_image_url: '', schema_definition: JSON.stringify({ logoURL: '', iconURL: '', thumbnailURL: '', backgroundURL: '', sharingProhibited: false }) }) }), f.env, context);
+    assert.equal(clear.status, 200);
+    f.sqlite.exec("UPDATE SystemSettings SET value = 'free' WHERE key = 'walletwalletPlan'");
+    const free = await worker.fetch(new Request('https://example.com/api/runner/create', { method: 'POST', body: JSON.stringify({ race_id: 'race', first_name: 'Free', last_name: 'Runner', email: 'free-art@example.com' }) }), f.env, context);
+    assert.equal((await free.json() as any).data.walletwallet_delivery.success, true);
+    for (const field of Object.keys(artwork)) assert.equal(body[field], undefined);
+    assert.equal(body.sharingProhibited, false);
+  } finally { globalThis.fetch = originalFetch; }
+});

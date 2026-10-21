@@ -114,7 +114,7 @@ export const GoogleWalletPassCard: React.FC<GoogleWalletPassCardProps> = ({
         <div className="p-5 pb-4">
           <div className="flex items-center space-x-3 mb-4">
             <div className="w-10 h-10 rounded-xl overflow-hidden bg-white/10 border border-white/10 flex-shrink-0 flex items-center justify-center">
-              <Sparkles className="w-5 h-5 text-white/90" />
+              <>{schema.logoURL ? <img src={schema.logoURL} alt="Pass logo" referrerPolicy="no-referrer" className="w-full h-full object-contain" /> : <Sparkles className="w-5 h-5 text-white/90" />}</>
             </div>
             <div className="min-w-0">
               <p className="text-[10px] font-bold uppercase tracking-wider truncate" style={{ color: preset.labelHex }}>

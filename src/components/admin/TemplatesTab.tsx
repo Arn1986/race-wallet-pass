@@ -1,3 +1,6 @@
+import { ARTWORK_FIELDS, EMPTY_ARTWORK, getTemplateArtwork, type TemplateArtwork } from '../../../server/templateArtwork.ts';
+import { validateTemplateSchema } from '../../../server/walletPayload.ts';
+import { TemplateImageField } from './TemplateImageField.tsx';
 import { buildWalletWalletPayload } from '../../../server/walletPayload.ts';
 import React, { useState, useEffect } from 'react';
 import { 
@@ -74,6 +77,8 @@ export const TemplatesTab: React.FC = () => {
   ]);
 
   const [sharingProhibited, setSharingProhibited] = useState(false);
+  const [artwork, setArtwork] = useState<TemplateArtwork>({ ...EMPTY_ARTWORK });
+  const [pendingUploads, setPendingUploads] = useState(0);
   const [loadedSchema, setLoadedSchema] = useState<Record<string, any>>({});
 
   const fetchTemplates = async () => {
@@ -96,6 +101,7 @@ export const TemplatesTab: React.FC = () => {
   };
 
   const handleStartNewTemplate = () => {
+    setArtwork({ ...EMPTY_ARTWORK });
     setLoadedSchema({});
     setIsCreatingNew(true);
     setSelectedId('');
@@ -132,6 +138,7 @@ export const TemplatesTab: React.FC = () => {
     let schema: any = {};
     try { schema = JSON.parse(tpl.schema_definition || '{}'); } catch {}
     if (!schema || typeof schema !== 'object' || Array.isArray(schema)) schema = {};
+    setArtwork(getTemplateArtwork(tpl));
     setLoadedSchema(schema);
     setOrganizationName(schema.organizationName ?? '3F Striders');
     setLogoText(schema.logoText ?? tpl.name);
@@ -180,10 +187,11 @@ export const TemplatesTab: React.FC = () => {
     setBackFields(updated);
   };
 
-  const makeSchema = () => {
+  const makeSchema = (preview = false) => {
     const { color: _legacyCustomColor, ...preserved } = loadedSchema;
-    return {
+    const schema = {
       ...preserved,
+      ...Object.fromEntries(ARTWORK_FIELDS.map(field => [field, artwork[field].trim()])),
       organizationName: organizationName.trim().slice(0, 64),
       logoText: logoText.trim().slice(0, 64),
       description: description.trim().slice(0, 128),
@@ -198,6 +206,11 @@ export const TemplatesTab: React.FC = () => {
       backFields: backFields.map(field => ({ ...field, label: String(field.label ?? '').trim(), key: field.key?.trim(), value: field.value === undefined ? undefined : String(field.value).trim() })),
       sharingProhibited,
     };
+    if (preview) {
+      try { validateTemplateSchema(schema); }
+      catch { return { ...schema, ...EMPTY_ARTWORK }; }
+    }
+    return schema;
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -209,14 +222,15 @@ export const TemplatesTab: React.FC = () => {
 
       const activeColorPreset = WALLET_COLOR_PRESETS[colorPreset];
 
-      const schemaPayload = makeSchema();
+      if (pendingUploads) throw new Error('Wait for image files to finish loading');
+      const schemaPayload = validateTemplateSchema(makeSchema());
 
       const payload = {
         name: name.trim(),
         background_color: activeColorPreset.bgHex,
         text_color: activeColorPreset.textHex,
         label_color: activeColorPreset.labelHex,
-        logo_image_url: templates.find(t => t.id === selectedId)?.logo_image_url || '',
+        logo_image_url: '',
         strip_image_url: templates.find(t => t.id === selectedId)?.strip_image_url || '',
         schema_definition: JSON.stringify(schemaPayload),
       };
@@ -266,9 +280,9 @@ export const TemplatesTab: React.FC = () => {
     background_color: activePresetConfig.bgHex,
     text_color: activePresetConfig.textHex,
     label_color: activePresetConfig.labelHex,
-    logo_image_url: templates.find(t => t.id === selectedId)?.logo_image_url || '',
+    logo_image_url: '',
     strip_image_url: templates.find(t => t.id === selectedId)?.strip_image_url || '',
-    schema_definition: JSON.stringify(makeSchema()),
+    schema_definition: JSON.stringify(makeSchema(true)),
     created_at: new Date().toISOString(),
   };
 
@@ -704,6 +718,26 @@ export const TemplatesTab: React.FC = () => {
                 </div>
               </div>
 
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                <label htmlFor="template-sharing" className="block font-bold text-white">Wallet sharing</label>
+                <select id="template-sharing" value={String(sharingProhibited)} onChange={event => setSharingProhibited(event.target.value === 'true')}
+                  className="w-full rounded-xl bg-slate-900 border border-slate-700 p-3 text-sm text-white">
+                  <option value="false">Allow sharing — sharingProhibited: false</option>
+                  <option value="true">Hide Apple Wallet share button — sharingProhibited: true</option>
+                </select>
+                <p className="text-xs text-slate-400">Saved separately for each template. This controls the share button inside Apple Wallet.</p>
+              </div>
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                <h3 className="font-bold text-white">Optional artwork</h3>
+                <p className="text-xs text-slate-400">Custom artwork requires WalletWallet Pro or Business. Leave these fields blank for Free. Use a public HTTPS URL or browse a file. JPEG/WebP files are converted to PNG; each image must be under 1 MB.</p>
+                {ARTWORK_FIELDS.map(field => <TemplateImageField key={`${selectedId || 'new'}-${field}`} field={field}
+                  description={{ logoURL: 'Pass-face logo. Recommended 160 × 160 px.', iconURL: 'Apple lock-screen notification icon. Recommended 120 × 120 px.',
+                    thumbnailURL: 'Image at the top-right of the pass. Recommended 180 × 180 px.', backgroundURL: 'Poster artwork. Recommended 690 × 1010 px; layout varies by wallet and OS.' }[field]}
+                  value={artwork[field]} disabled={saving || pendingUploads > 0} onChange={value => setArtwork(previous => ({ ...previous, [field]: value }))}
+                  onBusyChange={busy => setPendingUploads(count => Math.max(0, count + (busy ? 1 : -1)))} />)}
+                <p className="text-xs text-slate-400">Combined encoded template size must stay below 1.8 MB. For larger artwork, use HTTPS URLs. URLs and file contents are saved with the template; no separate bucket is required.</p>
+              </div>
+
               {/* 6. Card Back Fields (backFields) */}
               <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
                 <div className="flex items-center justify-between">
@@ -764,7 +798,7 @@ export const TemplatesTab: React.FC = () => {
               <div className="pt-2">
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || pendingUploads > 0}
                   className="w-full py-3.5 px-6 rounded-2xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold transition-all shadow-lg shadow-sky-500/20 flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
                 >
                   <Save className="w-4 h-4" />

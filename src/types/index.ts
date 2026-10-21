@@ -112,6 +112,10 @@ export interface WalletWalletField {
 }
 
 export interface PassSchema {
+  logoURL?: string;
+  iconURL?: string;
+  thumbnailURL?: string;
+  backgroundURL?: string;
   organizationName?: string;
   logoText?: string;
   description?: string;
