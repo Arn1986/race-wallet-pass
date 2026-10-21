@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS ImportJobs (
+  id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, runner_id TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'queued', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (runner_id) REFERENCES Runners(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_import_jobs_batch ON ImportJobs(batch_id);

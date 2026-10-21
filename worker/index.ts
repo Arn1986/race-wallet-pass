@@ -1,3 +1,4 @@
+import { importAthletes, importStatus, retryEnqueue } from './importJobs.ts';
 import { buildWalletWalletPayload, validateTemplateSchema } from '../server/walletPayload.ts';
 import { createPassLink, deliverPass, ensureStoredPass, resolvePassLink, storeApplePass, escapeHtml } from './passDelivery.ts';
 
@@ -1079,49 +1080,27 @@ export default {
     if (pathname === '/api/import' && request.method === 'POST') {
       try {
         const body: any = await request.json();
-        const { race_id, rows } = body;
-        if (!race_id || !Array.isArray(rows)) {
-          return Response.json({ success: false, error: 'race_id and rows array required' }, { status: 400, headers: corsHeaders });
-        }
-
-        for (const row of rows) {
-          const runnerId = `run-${crypto.randomUUID()}`;
-          const email = row.email || row.Email;
-          const firstName = row.first_name || row['First Name'] || 'Runner';
-          const lastName = row.last_name || row['Last Name'] || 'Participant';
-          if (!email) continue;
-
-          const dyn = { ...row };
-          delete dyn.email;
-          delete dyn.first_name;
-          delete dyn.last_name;
-
-          await env.DB.prepare(`
-            INSERT INTO Runners (id, race_id, email, first_name, last_name, dynamic_data)
-            VALUES (?, ?, ?, ?, ?, ?)
-          `).bind(runnerId, race_id, email, firstName, lastName, JSON.stringify(dyn)).run();
-
-          await env.DB.prepare(`
-            INSERT INTO Passes (id, runner_id, walletwallet_pass_id, status)
-            VALUES (?, ?, ?, 'pending')
-          `).bind(`pass-${runnerId}`, runnerId, `ww_${runnerId}`).run();
-
-          if (env.PASS_QUEUE) {
-            await env.PASS_QUEUE.send({
-              runner_id: runnerId,
-              race_id,
-              payload: { email, first_name: firstName, last_name: lastName, dynamic_data: dyn },
-            });
-          }
-        }
-
-        return Response.json({
-          success: true,
-          message: `Enqueued ${rows.length} participants to Cloudflare PASS_QUEUE`,
-          data: { total_enqueued: rows.length, queue_binding: 'PASS_QUEUE' },
-        }, { status: 202, headers: corsHeaders });
+        const result = await importAthletes(env, body.race_id, body.rows, body.resume_pending === true);
+        return Response.json(result.body, { status: result.status, headers: { ...corsHeaders, 'Cache-Control': 'private, no-store' } });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message || 'Import failed; check the event and CSV' }, { status: 500, headers: corsHeaders });
+      }
+    }
+    const importMatch = pathname.match(/^\/api\/import\/([a-f0-9-]{36})\/(status|retry)$/);
+    if (importMatch && request.method === 'GET' && importMatch[2] === 'status') {
+      try {
+        const data = await importStatus(env, importMatch[1]);
+        return Response.json({ success: true, data }, { headers: { ...corsHeaders, 'Cache-Control': 'private, no-store' } });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+      }
+    }
+    if (importMatch && request.method === 'POST' && importMatch[2] === 'retry') {
+      try {
+        const count = await retryEnqueue(env, importMatch[1]);
+        return Response.json({ success: true, message: `${count} athletes queued again` }, { status: 202, headers: corsHeaders });
+      } catch {
+        return Response.json({ success: false, error: 'Could not enqueue athletes. Check the queue configuration and try again.' }, { status: 503, headers: corsHeaders });
       }
     }
 
@@ -1483,6 +1462,8 @@ export default {
       }
     }
 
+    if (pathname.startsWith('/api/')) return Response.json({ success: false, error: 'API route not found' }, { status: 404, headers: corsHeaders });
+
     // =========================================================================
     // FRONTEND STATIC ASSETS & SPA ROUTING (Cloudflare Workers Assets)
     // =========================================================================
@@ -1507,11 +1488,21 @@ export default {
   // Background pass issuance; persist provider package before email and acknowledgement.
   async queue(batch: MessageBatch<any>, env: Env): Promise<void> {
     for (const message of batch.messages) {
+      const jobId = message.body.import_job_id;
       try {
+        if (jobId) {
+          const job = await env.DB.prepare('SELECT state FROM ImportJobs WHERE id = ?').bind(jobId).first<any>();
+          if (!job || ['completed', 'cancelled'].includes(job.state)) { message.ack(); continue; }
+          await env.DB.prepare("UPDATE ImportJobs SET state = 'processing', attempts = attempts + 1, last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(jobId).run();
+        }
         const { runner_id, payload } = message.body;
         const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runner_id).first<any>();
         const pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runner_id).first<any>();
-        if (!runner || !pass || pass.status === 'revoked') { message.ack(); continue; }
+        if (!runner || !pass || pass.status === 'revoked') {
+          if (jobId) await env.DB.prepare("UPDATE ImportJobs SET state = 'cancelled', last_error = 'Participant missing or pass revoked', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(jobId).run();
+          message.ack(); continue;
+        }
         if (pass.status !== 'issued' || !pass.r2_key) {
           const race = await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>();
           const template = race ? await env.DB.prepare('SELECT * FROM Templates WHERE id = ?').bind(race.template_id).first<any>() : null;
@@ -1535,14 +1526,22 @@ export default {
           await env.DB.prepare("UPDATE Passes SET status = 'issued', updated_at = CURRENT_TIMESTAMP WHERE runner_id = ?")
             .bind(runner_id).run();
         }
-        if (payload?.email) {
-          const emailResult = await sendPassEmail({ env, to: payload.email,
-            firstName: payload.first_name || 'Participant', runnerId: runner_id });
-          if (!emailResult.success) throw new Error('Pass email delivery failed');
+        if (jobId || payload?.email) {
+          const emailResult = await sendPassEmail({ env, to: runner.email,
+            firstName: runner.first_name || 'Participant', runnerId: runner_id });
+          if (!emailResult.success) throw new Error(emailResult.error || 'Pass email delivery failed');
         }
+        if (jobId) await env.DB.prepare("UPDATE ImportJobs SET state = 'completed', last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(jobId).run();
 
         message.ack();
-      } catch (err) {
+      } catch (err: any) {
+        if (jobId) {
+          try {
+            await env.DB.prepare("UPDATE ImportJobs SET state = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+              .bind((message.attempts || 1) >= 4 ? 'failed' : 'retrying', String(err.message || 'Pass processing failed').slice(0, 500), jobId).run();
+          } catch { /* Keep retrying even if recording the error failed. */ }
+        }
+        console.error('Pass queue processing failed:', err.message || 'Unknown error');
         message.retry();
       }
     }

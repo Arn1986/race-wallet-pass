@@ -319,79 +319,12 @@ app.post('/api/runner/reissue', (req, res) => {
 // -----------------------------------------------------------------------------
 // 4. Core Workflow D: Async Bulk CSV Ingestion -> Queue
 // -----------------------------------------------------------------------------
-app.post('/api/import', (req, res) => {
-  try {
-    const { race_id, rows } = req.body;
-    if (!race_id || !Array.isArray(rows) || rows.length === 0) {
-      return res.status(400).json({ success: false, error: 'Invalid payload: race_id and rows array required' });
-    }
-
-    const race = d1Db.getRaceById(race_id);
-    if (!race) {
-      return res.status(404).json({ success: false, error: 'Target race does not exist' });
-    }
-
-    const enqueuedJobs = [];
-    const createdRunners = [];
-
-    for (const row of rows) {
-      const email = row.email || row.Email;
-      const firstName = row.first_name || row['First Name'] || row.firstname || 'Runner';
-      const lastName = row.last_name || row['Last Name'] || row.lastname || 'Participant';
-
-      if (!email) continue;
-
-      // Clean dynamic fields
-      const dynamicData: Record<string, any> = { ...row };
-      delete dynamicData.email;
-      delete dynamicData.Email;
-      delete dynamicData.first_name;
-      delete dynamicData['First Name'];
-      delete dynamicData.firstname;
-      delete dynamicData.last_name;
-      delete dynamicData['Last Name'];
-      delete dynamicData.lastname;
-
-      const { runner, pass } = d1Db.createRunner({
-        race_id,
-        email,
-        first_name: firstName,
-        last_name: lastName,
-        dynamic_data: dynamicData,
-        issuePassImmediate: false, // marked 'pending'
-      });
-
-      createdRunners.push(runner);
-
-      // Enqueue to PASS_QUEUE
-      const job = d1Db.enqueueJob({
-        runner_id: runner.id,
-        race_id,
-        payload: {
-          first_name: firstName,
-          last_name: lastName,
-          email,
-          dynamic_data: dynamicData,
-        },
-      });
-      enqueuedJobs.push(job);
-    }
-
-    // Return 202 Accepted immediately as per Cloudflare Queue pattern!
-    return res.status(202).json({
-      success: true,
-      message: `Enqueued ${enqueuedJobs.length} participants to Cloudflare PASS_QUEUE for asynchronous generation`,
-      data: {
-        total_enqueued: enqueuedJobs.length,
-        queue_binding: 'PASS_QUEUE',
-        batch_size: 10,
-        status: '202_ACCEPTED',
-      },
-    });
-  } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
+// The Express preview uses an in-memory mock, not Cloudflare Queues.
+// Reject bulk issuance explicitly so the UI cannot claim production work was queued.
+app.post('/api/import', (_req, res) => res.status(503).json({
+  success: false,
+  error: 'Bulk pass issuance requires the Cloudflare Worker runtime. Use npx wrangler dev (with local D1 and bindings configured) or your deployed Worker.',
+}));
 
 // Trigger queue batch processing
 app.post('/api/queue/process', (req, res) => {

@@ -16,7 +16,13 @@ function fixture() {
   const objects = new Map<string, Uint8Array>();
   let failStorage = false;
   const env = {
-    DB: { prepare(sql: string) {
+    DB: {
+      async batch(statements: any[]) {
+        sqlite.exec('BEGIN');
+        try { const results = []; for (const statement of statements) results.push(await statement.run()); sqlite.exec('COMMIT'); return results; }
+        catch (error) { sqlite.exec('ROLLBACK'); throw error; }
+      },
+      prepare(sql: string) {
       let args: any[] = [];
       return {
         bind(...values: any[]) { args = values; return this; },
@@ -272,4 +278,126 @@ test('provider validation errors never retry with a different preset', async () 
     const response = await worker.fetch(new Request('https://example.com/api/pass/sync/runner', { method: 'POST' }), f.env, context);
     assert.equal(response.status, 502); assert.equal(calls, 1);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test('five-athlete CSV import persists rows, queues them, and completes real Worker issuance and email processing', async () => {
+  const { SAMPLE_ATHLETES_CSV, parseAthleteCsv } = await import('../server/csvImport.ts');
+  const f = fixture(), originalFetch = globalThis.fetch;
+  let messages: any[] = [], creates = 0, emails = 0;
+  f.env.PASS_QUEUE = { async sendBatch(batch: any) { messages.push(...batch); } } as any;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('api.walletwallet.dev')) {
+      creates++;
+      const body = JSON.parse(String(init?.body)); assert.match(body.barcodeValue, /^100[1-5]$/);
+      return Response.json({ serialNumber: crypto.randomUUID(), applePass: signedBase64, googleSaveUrl: 'https://pay.google.com/gp/v/save/test' });
+    }
+    emails++; return Response.json({ id: 'email-id' });
+  };
+  try {
+    const response = await worker.fetch(new Request('https://example.com/api/import', { method: 'POST', body: JSON.stringify({ race_id: 'race', rows: parseAthleteCsv(SAMPLE_ATHLETES_CSV).rows }) }), f.env, context);
+    const result: any = await response.json();
+    assert.equal(response.status, 202); assert.equal(result.data.total_enqueued, 5); assert.equal(messages.length, 5);
+    assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM Runners').get()!.n, 6);
+    assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM ImportJobs WHERE state = 'queued'").get()!.n, 5);
+    const delivered = messages.map(message => ({ ...message, attempts: 1, ack() {}, retry() { assert.fail('Sample import must not retry'); } }));
+    await worker.queue({ messages: delivered } as any, f.env);
+    assert.equal(creates, 5); assert.equal(emails, 5); assert.equal(f.objects.size, 5);
+    const status = await worker.fetch(new Request(`https://example.com/api/import/${result.data.batch_id}/status`), f.env, context);
+    const progress: any = await status.json(); assert.equal(progress.data.counts.completed, 5);
+    // Redelivery after completion does not issue another pass or send another email.
+    await worker.queue({ messages: delivered } as any, f.env);
+    assert.equal(creates, 5); assert.equal(emails, 5);
+    // Re-uploading the same file safely skips already registered addresses.
+    const duplicate = await worker.fetch(new Request('https://example.com/api/import', { method: 'POST', body: JSON.stringify({ race_id: 'race', rows: parseAthleteCsv(SAMPLE_ATHLETES_CSV).rows }) }), f.env, context);
+    const duplicates: any = await duplicate.json(); assert.equal(duplicates.data.total_enqueued, 0); assert.equal(duplicates.data.total_skipped, 5);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('import validation reports true accepted/duplicate/invalid counts and does not mutate without a queue', async () => {
+  const f = fixture();
+  const athlete = { first_name: 'New', last_name: 'Runner', email: 'new@example.com' };
+  const request = (rows: any[], race_id = 'race') => new Request('https://example.com/api/import', { method: 'POST', body: JSON.stringify({ race_id, rows }) });
+  assert.equal((await worker.fetch(request([athlete]), f.env, context)).status, 503);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM Runners').get()!.n, 1);
+  f.env.PASS_QUEUE = { async sendBatch() {} } as any;
+  assert.equal((await worker.fetch(request([athlete], 'missing'), f.env, context)).status, 404);
+  const res = await worker.fetch(request([athlete, { ...athlete, email: 'NEW@example.com' }, { ...athlete, email: 'runner@example.com' }, { ...athlete, email: 'bad' }]), f.env, context);
+  const json: any = await res.json(); assert.equal(json.data.total_enqueued, 1); assert.equal(json.data.total_skipped, 2); assert.equal(json.data.total_invalid, 1);
+  assert.equal(json.data.errors[0].row, 5);
+});
+
+test('queue producer failure preserves recoverable jobs and Retry Failed Athletes queues existing runners', async () => {
+  const f = fixture();
+  f.env.PASS_QUEUE = { async sendBatch() { throw new Error('Queue unavailable'); } } as any;
+  const res = await worker.fetch(new Request('https://example.com/api/import', { method: 'POST', body: JSON.stringify({ race_id: 'race', rows: [{ first_name: 'New', last_name: 'Runner', email: 'new@example.com' }] }) }), f.env, context);
+  const json: any = await res.json(); assert.equal(res.status, 503); assert.equal(json.data.total_saved, 1); assert.equal(json.data.total_enqueued, 0);
+  assert.equal(f.sqlite.prepare('SELECT state FROM ImportJobs').get()!.state, 'enqueue_failed');
+  let queued = 0;
+  f.env.PASS_QUEUE = { async sendBatch(messages: any[]) { queued += messages.length; } } as any;
+  const retry = await worker.fetch(new Request(`https://example.com/api/import/${json.data.batch_id}/retry`, { method: 'POST' }), f.env, context);
+  assert.equal(retry.status, 202); assert.equal(queued, 1); assert.equal(f.sqlite.prepare('SELECT state FROM ImportJobs').get()!.state, 'queued');
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM Runners').get()!.n, 2);
+});
+
+test('queue consumer records provider errors and terminal failure instead of silently retrying', async () => {
+  const f = fixture(), originalFetch = globalThis.fetch;
+  let messages: any[] = [];
+  f.env.PASS_QUEUE = { async sendBatch(batch: any[]) { messages = batch; } } as any;
+  const res = await worker.fetch(new Request('https://example.com/api/import', { method: 'POST', body: JSON.stringify({ race_id: 'race', rows: [{ first_name: 'New', last_name: 'Runner', email: 'new@example.com' }] }) }), f.env, context);
+  assert.equal(res.status, 202);
+  globalThis.fetch = async () => Response.json({ error: 'Monthly pass limit exceeded' }, { status: 429 });
+  let retries = 0;
+  try {
+    const message = { ...messages[0], attempts: 1, ack() { assert.fail('Must not acknowledge failed issuance'); }, retry() { retries++; } };
+    await worker.queue({ messages: [message] } as any, f.env);
+    assert.equal(f.sqlite.prepare('SELECT state FROM ImportJobs').get()!.state, 'retrying');
+    assert.equal(f.sqlite.prepare('SELECT last_error FROM ImportJobs').get()!.last_error, 'Monthly pass limit exceeded');
+    await worker.queue({ messages: [{ ...message, attempts: 4 }] } as any, f.env);
+    assert.equal(f.sqlite.prepare('SELECT state FROM ImportJobs').get()!.state, 'failed'); assert.equal(retries, 2);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('import writes roll back together when a pass insert fails', async () => {
+  const f = fixture(); let queueCalls = 0;
+  f.env.PASS_QUEUE = { async sendBatch() { queueCalls++; } } as any;
+  f.sqlite.exec("CREATE TRIGGER reject_import BEFORE INSERT ON Passes BEGIN SELECT RAISE(ABORT, 'Simulated pass insert failure'); END;");
+  const res = await worker.fetch(new Request('https://example.com/api/import', { method: 'POST', body: JSON.stringify({ race_id: 'race', rows: [{ first_name: 'New', last_name: 'Runner', email: 'new@example.com' }] }) }), f.env, context);
+  assert.equal(res.status, 500); assert.equal(queueCalls, 0);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM Runners').get()!.n, 1);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM ImportJobs').get()!.n, 0);
+});
+
+test('100-row import stays inside D1 parameter and Queue message batch limits', async () => {
+  const f = fixture();
+  const originalPrepare = f.env.DB.prepare.bind(f.env.DB);
+  f.env.DB.prepare = (sql: string) => {
+    const statement = originalPrepare(sql), bind = statement.bind.bind(statement);
+    statement.bind = (...args: any[]) => { assert.ok(args.length <= 100); return bind(...args); };
+    return statement;
+  };
+  let queued = 0;
+  f.env.PASS_QUEUE = { async sendBatch(messages: any[]) {
+    assert.ok(messages.length <= 100);
+    const size = messages.reduce((total, message) => total + new TextEncoder().encode(JSON.stringify(message.body)).byteLength, 0);
+    assert.ok(size <= 240_000); queued += messages.length;
+  } } as any;
+  const rows = Array.from({ length: 100 }, (_, i) => ({ email: `athlete${i}@example.com`, first_name: 'Test', last_name: 'Runner', notes: 'X'.repeat(3000) }));
+  const res = await worker.fetch(new Request('https://example.com/api/import', { method: 'POST', body: JSON.stringify({ race_id: 'race', rows }) }), f.env, context);
+  assert.equal(res.status, 202); assert.equal(queued, 100);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM ImportJobs').get()!.n, 100);
+});
+
+test('previously saved pending athletes can be explicitly resumed without duplicate runners', async () => {
+  const f = fixture(); f.sqlite.exec("UPDATE Passes SET status = 'pending'");
+  let queued = 0; f.env.PASS_QUEUE = { async sendBatch(messages: any[]) { queued += messages.length; } } as any;
+  const request = (resume_pending: boolean) => new Request('https://example.com/api/import', { method: 'POST', body: JSON.stringify({ race_id: 'race', resume_pending,
+    rows: [{ first_name: 'Actual', last_name: 'Runner', email: 'runner@example.com', bib_number: '1001' }] }) });
+  const skipped = await worker.fetch(request(false), f.env, context);
+  assert.equal((await skipped.json() as any).data.total_skipped, 1); assert.equal(queued, 0);
+  const resumed = await worker.fetch(request(true), f.env, context);
+  const json: any = await resumed.json(); assert.equal(resumed.status, 202); assert.equal(json.data.total_resumed, 1); assert.equal(queued, 1);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM Runners').get()!.n, 1);
+  assert.equal(f.sqlite.prepare('SELECT first_name FROM Runners').get()!.first_name, 'Actual');
+  const active = await worker.fetch(request(true), f.env, context);
+  assert.equal((await active.json() as any).data.total_enqueued, 0); assert.equal(queued, 1);
 });

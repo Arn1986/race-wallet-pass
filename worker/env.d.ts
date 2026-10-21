@@ -37,6 +37,7 @@ declare global {
   }
 
   interface Message<T = any> {
+    attempts?: number;
     id: string;
     timestamp: Date;
     body: T;
