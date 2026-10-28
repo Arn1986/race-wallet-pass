@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import rawWorker, { type Env } from '../worker/index.ts';
 import { accessConfig, accessToken } from './accessFixture.ts';
+import { EMAIL_THEMES } from '../server/emailDesign.ts';
 import { createPassLink, deliverPass, deviceWallet, storeApplePass } from '../worker/passDelivery.ts';
 
 // Existing behavior tests run through the production gate with a genuinely signed JWT.
@@ -532,4 +533,71 @@ test('email-template validation and invalid event assignment never create broken
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM EmailTemplates').get()!.n, 0);
   const event = await worker.fetch(new Request('https://example.com/api/races', { method: 'POST', body: JSON.stringify({ name: 'Bad event', template_id: 'tpl', email_template_id: 'missing' }) }), f.env, context);
   assert.equal(event.status, 400); assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM Races').get()!.n, 1);
+});
+
+test('email design schema upgrades automatically and styles round-trip without resetting on text-only edits', async () => {
+  const f = fixture();
+  f.sqlite.exec('DROP TABLE EmailTemplateDesigns'); // Simulate the already-deployed email-template schema.
+  const call = (path: string, method = 'GET', body?: any) => worker.fetch(new Request(`https://example.com${path}`, {
+    method, ...(body ? { body: JSON.stringify(body) } : {}),
+  }), f.env, context);
+  const design = { ...EMAIL_THEMES['Clean Light'], fontFamily: 'georgia', signatureText: 'Regards, {{event_name}} Team', logo: 'https://example.com/logo.png' };
+  const created = await call('/api/email-templates', 'POST', { name: 'Styled', subject: 'Hello', message: 'Welcome', design });
+  assert.equal(created.status, 201);
+  const { data } = await created.json() as any;
+  assert.deepEqual(data.design, design);
+  const textOnly = await call(`/api/email-templates/${data.id}`, 'PUT', { name: 'Renamed', subject: 'New subject', message: 'New message' });
+  assert.deepEqual((await textOnly.json() as any).data.design, design);
+  const list = await call('/api/email-templates');
+  assert.deepEqual((await list.json() as any).data[0].design, design);
+  const bad = await call(`/api/email-templates/${data.id}`, 'PUT', { name: 'Bad', subject: 'Bad', message: 'Bad', design: { buttonColor: '#ffffff', buttonTextColor: '#ffffff' } });
+  assert.equal(bad.status, 400);
+  assert.equal(f.sqlite.prepare('SELECT name FROM EmailTemplates WHERE id = ?').get(data.id)!.name, 'Renamed');
+  const reset = await call(`/api/email-templates/${data.id}`, 'PUT', { name: 'Reset', subject: 'Hello', message: 'Welcome', design: null });
+  assert.equal((await reset.json() as any).data.design.logo, '');
+  const deleted = await call(`/api/email-templates/${data.id}`, 'DELETE');
+  assert.equal(deleted.status, 200);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM EmailTemplateDesigns').get()!.n, 0);
+});
+
+test('signature logo and colors reach Resend in retries, immediate issuance and queued emails', async () => {
+  const f = fixture(), previousFetch = globalThis.fetch;
+  const logo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY9sAAAAASUVORK5CYII=';
+  const design = { ...EMAIL_THEMES.Purple, logo, signatureText: 'Regards, {{first_name}} — 3F Team', logoWidth: 200 };
+  f.sqlite.prepare('INSERT INTO EmailTemplates(id,name,subject,message) VALUES (?,?,?,?)').run('styled', 'Styled', 'Your pass', 'Welcome {{first_name}}');
+  f.sqlite.prepare('INSERT INTO EmailTemplateDesigns(email_template_id,design_json) VALUES (?,?)').run('styled', JSON.stringify(design));
+  f.sqlite.exec("INSERT INTO EventEmailTemplates(race_id,email_template_id) VALUES ('race','styled')");
+  await storeApplePass(f.env, 'runner', signedBase64).then(key => f.sqlite.prepare('UPDATE Passes SET r2_key = ? WHERE runner_id = ?').run(key, 'runner'));
+  const emails: any[] = []; let queued: any[] = [];
+  f.env.PASS_QUEUE = { async sendBatch(messages: any[]) { queued = messages; } } as any;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('api.walletwallet.dev')) return Response.json({ serialNumber: crypto.randomUUID(), applePass: signedBase64, googleSaveUrl: 'https://pay.google.com/gp/v/save/test' });
+    emails.push(JSON.parse(String(init?.body)));
+    return emails.length === 1 ? Response.json({ message: 'Test sender failure' }, { status: 422 }) : Response.json({ id: 'email-id' });
+  };
+  const call = (path: string, body: any) => worker.fetch(new Request(`https://example.com${path}`, { method: 'POST', body: JSON.stringify(body) }), f.env, context);
+  try {
+    assert.equal((await call('/api/runner/send-email', { runner_id: 'runner' })).status, 200);
+    assert.equal(emails.length, 2);
+    assert.deepEqual(emails[0].attachments, emails[1].attachments);
+    assert.equal((await call('/api/runner/create', { race_id: 'race', first_name: 'New', last_name: 'Runner', email: 'style-new@example.com' })).status, 200);
+    await call('/api/import', { race_id: 'race', rows: [{ first_name: 'Bulk', last_name: 'Runner', email: 'style-bulk@example.com' }] });
+    await worker.queue({ messages: queued.map(message => ({ ...message, attempts: 1, ack() {}, retry() { assert.fail('Styled email should succeed'); } })) } as any, f.env);
+    assert.equal(emails.length, 4);
+    for (const email of emails) {
+      assert.ok(email.html.includes(`background:${design.headerColor}`));
+      assert.ok(email.html.includes('src="cid:email-signature-logo"'));
+      assert.ok(email.html.indexOf('— 3F Team') < email.html.indexOf('Download your wallet pass'));
+      assert.ok(!email.html.includes('data:image'));
+      assert.equal(email.attachments[0].content, logo.split(',')[1]);
+      assert.equal(email.attachments[0].content_id, 'email-signature-logo');
+      assert.ok(email.text.includes('— 3F Team'));
+      assert.match(email.html, /href="https:\/\/walletpass\.3fstriders\.org\/[A-Za-z0-9_-]{43}"/);
+    }
+    // Removing the logo also removes the outgoing attachment.
+    f.sqlite.prepare('UPDATE EmailTemplateDesigns SET design_json = ?').run(JSON.stringify({ ...design, logo: '' }));
+    await call('/api/runner/send-email', { runner_id: 'runner' });
+    assert.equal(emails[4].attachments.length, 0);
+    assert.ok(!emails[4].html.includes('<img'));
+  } finally { globalThis.fetch = previousFetch; }
 });

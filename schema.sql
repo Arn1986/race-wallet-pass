@@ -111,3 +111,9 @@ CREATE TABLE IF NOT EXISTS EventEmailTemplates (
   FOREIGN KEY (email_template_id) REFERENCES EmailTemplates(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_event_email_template ON EventEmailTemplates(email_template_id);
+
+CREATE TABLE IF NOT EXISTS EmailTemplateDesigns (
+  email_template_id TEXT PRIMARY KEY,
+  design_json TEXT NOT NULL,
+  FOREIGN KEY (email_template_id) REFERENCES EmailTemplates(id) ON DELETE CASCADE
+);

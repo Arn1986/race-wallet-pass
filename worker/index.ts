@@ -1,6 +1,7 @@
 import { authorizeRequest, PASS_PATH, type AccessConfig } from './adminAccess.ts';
 import { validateEmailTemplate, renderPassEmail } from '../server/emailTemplates.ts';
-import { ensureEmailTemplateSchema, selectedTemplateExists, setEventEmailTemplate, emailContext } from './emailTemplateStore.ts';
+import { ensureEmailTemplateSchema, selectedTemplateExists, setEventEmailTemplate, emailContext, emailTemplateRecord } from './emailTemplateStore.ts';
+import { parseEmailDesignJson } from '../server/emailDesign.ts';
 import { importAthletes, importStatus, retryEnqueue } from './importJobs.ts';
 import { buildWalletWalletPayload, validateTemplateSchema } from '../server/walletPayload.ts';
 import { createPassLink, deliverPass, ensureStoredPass, resolvePassLink, storeApplePass } from './passDelivery.ts';
@@ -199,6 +200,7 @@ async function sendPassEmail(options: {
         subject: rendered.subject,
         html: rendered.html,
         text: rendered.text,
+        attachments: rendered.attachments,
       }),
     });
 
@@ -218,6 +220,7 @@ async function sendPassEmail(options: {
             subject: rendered.subject,
             html: rendered.html,
             text: rendered.text,
+            attachments: rendered.attachments,
           }),
         });
         const retryJson: any = await retry.json();
@@ -456,22 +459,28 @@ export default {
         await ensureD1Bootstrap(env);
         const id = pathname === '/api/email-templates' ? null : pathname.slice('/api/email-templates/'.length);
         if (!id && request.method === 'GET') {
-          const records = await env.DB.prepare(`SELECT et.*, (SELECT COUNT(*) FROM EventEmailTemplates ee WHERE ee.email_template_id = et.id) AS event_count
-            FROM EmailTemplates et ORDER BY et.created_at DESC, et.name`).all<any>();
-          return Response.json({ success: true, data: records.results }, { headers: { ...corsHeaders, 'Cache-Control': 'private, no-store' } });
+          const records = await env.DB.prepare(`SELECT et.*, ed.design_json, (SELECT COUNT(*) FROM EventEmailTemplates ee WHERE ee.email_template_id = et.id) AS event_count
+            FROM EmailTemplates et LEFT JOIN EmailTemplateDesigns ed ON ed.email_template_id = et.id ORDER BY et.created_at DESC, et.name`).all<any>();
+          return Response.json({ success: true, data: records.results.map(emailTemplateRecord) }, { headers: { ...corsHeaders, 'Cache-Control': 'private, no-store' } });
         }
         if (!id && request.method === 'POST' || id && request.method === 'PUT') {
-          const content = validateEmailTemplate(await request.json());
-          if (id && !await env.DB.prepare('SELECT id FROM EmailTemplates WHERE id = ?').bind(id).first()) {
+          const input: any = await request.json();
+          const existing = id ? await env.DB.prepare('SELECT et.*, ed.design_json FROM EmailTemplates et LEFT JOIN EmailTemplateDesigns ed ON ed.email_template_id = et.id WHERE et.id = ?').bind(id).first<any>() : null;
+          if (id && !existing) {
             return Response.json({ success: false, error: 'Email template not found' }, { status: 404, headers: corsHeaders });
           }
+          const content = validateEmailTemplate({ ...input, design: input?.design === undefined ? parseEmailDesignJson(existing?.design_json) : input.design });
           const templateId = id || `email-${crypto.randomUUID()}`;
-          if (id) await env.DB.prepare('UPDATE EmailTemplates SET name = ?, subject = ?, message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-            .bind(content.name, content.subject, content.message, id).run();
-          else await env.DB.prepare('INSERT INTO EmailTemplates (id, name, subject, message) VALUES (?, ?, ?, ?)')
-            .bind(templateId, content.name, content.subject, content.message).run();
-          const data = await env.DB.prepare('SELECT * FROM EmailTemplates WHERE id = ?').bind(templateId).first<any>();
-          return Response.json({ success: true, data }, { status: id ? 200 : 201, headers: corsHeaders });
+          await env.DB.batch([
+            id ? env.DB.prepare('UPDATE EmailTemplates SET name = ?, subject = ?, message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+              .bind(content.name, content.subject, content.message, id)
+              : env.DB.prepare('INSERT INTO EmailTemplates (id, name, subject, message) VALUES (?, ?, ?, ?)')
+                .bind(templateId, content.name, content.subject, content.message),
+            env.DB.prepare('INSERT INTO EmailTemplateDesigns (email_template_id, design_json) VALUES (?, ?) ON CONFLICT(email_template_id) DO UPDATE SET design_json = excluded.design_json')
+              .bind(templateId, JSON.stringify(content.design)),
+          ]);
+          const data = await env.DB.prepare('SELECT et.*, ed.design_json FROM EmailTemplates et LEFT JOIN EmailTemplateDesigns ed ON ed.email_template_id = et.id WHERE et.id = ?').bind(templateId).first<any>();
+          return Response.json({ success: true, data: emailTemplateRecord(data) }, { status: id ? 200 : 201, headers: corsHeaders });
         }
         if (id && request.method === 'DELETE') {
           if (!await env.DB.prepare('SELECT id FROM EmailTemplates WHERE id = ?').bind(id).first()) return Response.json({ success: false, error: 'Email template not found' }, { status: 404, headers: corsHeaders });

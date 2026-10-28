@@ -1,6 +1,7 @@
 import { buildWalletWalletPayload } from './walletPayload.ts';
+import { validateEmailDesign, EMAIL_FONTS, emailLogoAttachment, type EmailDesign } from './emailDesign.ts';
 
-export interface EmailTemplateContent { name: string; subject: string; message: string }
+export interface EmailTemplateContent { name: string; subject: string; message: string; design?: EmailDesign }
 export interface EmailTemplate extends EmailTemplateContent { id: string; event_count?: number; created_at?: string; updated_at?: string }
 export const DEFAULT_EMAIL_TEMPLATE: EmailTemplateContent = {
   name: 'Default wallet invitation', subject: 'Your {{event_name}} digital pass is ready',
@@ -17,7 +18,8 @@ export function validateEmailTemplate(input: any): EmailTemplateContent {
     result[key] = input[key].trim();
   }
   if (/[\r\n\x00]/.test(result.subject)) throw new Error('Subject must be a single line');
-  for (const text of [result.subject, result.message]) {
+  result.design = validateEmailDesign(input.design);
+  for (const text of [result.subject, result.message, result.design.signatureText]) {
     for (const match of text.matchAll(tokenPattern)) {
       const key = match[1].trim();
       if (!(EMAIL_VARIABLES as readonly string[]).includes(key) && !/^data\.[A-Za-z0-9_]+$/.test(key)) throw new Error(`Unknown variable: {{${key}}}`);
@@ -28,7 +30,7 @@ export function validateEmailTemplate(input: any): EmailTemplateContent {
 }
 function escape(value: string) { return value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!)); }
 export function renderPassEmail(options: {
-  template?: EmailTemplateContent; passUrl: string;
+  template?: EmailTemplateContent; passUrl: string; preview?: boolean;
   runner: { id: string; first_name: string; last_name: string; email: string; dynamic_data?: any };
   event: { name: string; event_date?: string; location?: string; field_mapping?: string };
 }) {
@@ -52,17 +54,24 @@ export function renderPassEmail(options: {
   });
   const subject = interpolate(template.subject).replace(/[\r\n\x00-\x1f]+/g, ' ').slice(0, 200);
   const message = interpolate(template.message);
-  const paragraphs = escape(message).split(/\r?\n\s*\r?\n/).map(p => `<p style="margin:0 0 18px;line-height:1.65">${p.replace(/\r?\n/g, '<br>')}</p>`).join('');
+  const formatText = (text: string) => escape(text).split(/\r?\n\s*\r?\n/).map(p => `<p style="margin:0 0 18px;line-height:1.65">${p.replace(/\r?\n/g, '<br>')}</p>`).join('');
+  const paragraphs = formatText(message), design = template.design!;
+  const signatureText = interpolate(design.signatureText);
+  const attachments = design.logo.startsWith('data:') ? [emailLogoAttachment(design.logo)] : [];
+  const logoSrc = attachments.length && !options.preview ? 'cid:email-signature-logo' : design.logo;
+  const signature = signatureText || design.logo ? `<div style="padding:4px 0 16px;text-align:${design.signatureAlign}">${signatureText ? formatText(signatureText) : ''}${logoSrc ? `<img src="${escape(logoSrc)}" alt="${escape(design.logoAlt)}" width="${design.logoWidth}" style="display:inline-block;width:${design.logoWidth}px;max-width:100%;height:auto;border:0;vertical-align:middle">` : ''}</div>` : '';
+  const radius = design.corners === 'rounded' ? 20 : 0;
   const href = escape(url.href), eventName = escape(options.event.name);
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-  <body style="margin:0;background:#0f172a;font-family:Arial,sans-serif;color:#f8fafc;padding:32px 16px">
-  <div style="max-width:560px;margin:auto;background:#1e293b;border:1px solid #334155;border-radius:20px;overflow:hidden">
-  <div style="background:#0369a1;padding:28px 24px;text-align:center"><h1 style="margin:0;font-size:22px;color:#fff">${eventName}</h1><p style="margin:8px 0 0;color:#e0f2fe">Your digital wallet pass</p></div>
-  <div style="padding:28px 24px"><div style="font-size:15px;color:#e2e8f0;overflow-wrap:anywhere">${paragraphs}</div>
-  <div style="text-align:center;padding:12px 0 24px"><a href="${href}" style="display:inline-block;padding:16px 28px;background:#38bdf8;color:#0f172a;border-radius:12px;font-size:16px;font-weight:bold;text-decoration:none">Download your wallet pass</a></div>
-  <p style="font-size:12px;line-height:1.6;color:#94a3b8">If the button does not work, open your personal link:<br><a href="${href}" style="color:#38bdf8;word-break:break-all">${href}</a></p></div>
-  <div style="padding:18px 24px;background:#0f172a;text-align:center;font-size:12px;color:#94a3b8">${eventName} · 3F Striders</div></div></body></html>`;
-  return { subject, html, text: `${message}\n\nDownload your wallet pass:\n${url.href}` };
+  <body style="margin:0;background:${design.backgroundColor};font-family:${EMAIL_FONTS[design.fontFamily]};color:${design.textColor};padding:32px 16px">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center">
+  <table role="presentation" width="560" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:560px;background:${design.cardColor};border-radius:${radius}px;overflow:hidden">
+  <tr><td bgcolor="${design.headerColor}" style="background:${design.headerColor};padding:28px 24px;text-align:center;color:${design.headerTextColor}"><h1 style="margin:0;font-size:22px;color:${design.headerTextColor}">${eventName}</h1><p style="margin:8px 0 0;color:${design.headerTextColor}">Your digital wallet pass</p></td></tr>
+  <tr><td bgcolor="${design.cardColor}" style="padding:28px 24px;background:${design.cardColor};font-size:${design.fontSize}px;color:${design.textColor};overflow-wrap:anywhere">${paragraphs}${signature}
+  <table role="presentation" align="center" cellspacing="0" cellpadding="0" border="0" style="margin:12px auto 24px"><tr><td align="center" bgcolor="${design.buttonColor}" style="background:${design.buttonColor};border-radius:${radius ? 12 : 0}px;mso-padding-alt:16px 28px"><a href="${href}" style="display:inline-block;padding:16px 28px;background:${design.buttonColor};color:${design.buttonTextColor};border-radius:${radius ? 12 : 0}px;font-family:${EMAIL_FONTS[design.fontFamily]};font-size:16px;font-weight:bold;text-decoration:none">Download your wallet pass</a></td></tr></table>
+  <p style="font-size:12px;line-height:1.6;color:${design.textColor}">If the button does not work, open your personal link:<br><a href="${href}" style="color:${design.linkColor};word-break:break-all">${href}</a></p></td></tr>
+  <tr><td style="padding:18px 24px;text-align:center;font-size:12px;color:${design.textColor}">${eventName} · 3F Striders</td></tr></table></td></tr></table></body></html>`;
+  return { subject, html, text: `${message}${signatureText ? `\n\n${signatureText}` : ''}\n\nDownload your wallet pass:\n${url.href}`, attachments };
 }
 
 export const EMAIL_PREVIEW_CONTEXT = { passUrl: 'https://walletpass.3fstriders.org/preview-only',

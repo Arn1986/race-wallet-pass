@@ -608,7 +608,7 @@ app.post('/api/email-templates', (req, res) => {
 app.put('/api/email-templates/:id', (req, res) => {
   try {
     if (!emailTemplates.has(req.params.id)) return res.status(404).json({ success: false, error: 'Email template not found' });
-    const template = { ...validateEmailTemplate(req.body), id: req.params.id }; emailTemplates.set(template.id, template);
+    const template = { ...validateEmailTemplate({ ...req.body, design: req.body.design === undefined ? emailTemplates.get(req.params.id)?.design : req.body.design }), id: req.params.id }; emailTemplates.set(template.id, template);
     return res.json({ success: true, data: template });
   } catch (err: any) { return res.status(400).json({ success: false, error: err.message }); }
 });
@@ -721,6 +721,7 @@ async function dispatchPassEmailServer(options: {
         subject: rendered.subject,
         html: rendered.html,
         text: rendered.text,
+        attachments: rendered.attachments,
       }),
     });
 
@@ -738,7 +739,8 @@ async function dispatchPassEmailServer(options: {
             to: [to],
             subject: rendered.subject,
             html: rendered.html,
-        text: rendered.text,
+            text: rendered.text,
+            attachments: rendered.attachments,
           }),
         });
         const retryJson: any = await retry.json();

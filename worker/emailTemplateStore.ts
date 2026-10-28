@@ -1,4 +1,13 @@
 import type { EmailTemplateContent } from '../server/emailTemplates.ts';
+import { parseEmailDesignJson } from '../server/emailDesign.ts';
+export const EMAIL_DESIGN_SCHEMA = `CREATE TABLE IF NOT EXISTS EmailTemplateDesigns (
+  email_template_id TEXT PRIMARY KEY, design_json TEXT NOT NULL,
+  FOREIGN KEY (email_template_id) REFERENCES EmailTemplates(id) ON DELETE CASCADE
+)`;
+export function emailTemplateRecord(row: any) {
+  const { design_json, ...content } = row;
+  return { ...content, design: parseEmailDesignJson(design_json) };
+}
 export const EMAIL_TEMPLATE_SCHEMA = `CREATE TABLE IF NOT EXISTS EmailTemplates (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, subject TEXT NOT NULL, message TEXT NOT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -12,7 +21,7 @@ const ready = new WeakMap<D1Database, Promise<void>>();
 export function ensureEmailTemplateSchema(db: D1Database): Promise<void> {
   let promise = ready.get(db);
   if (!promise) {
-    promise = (async () => { await db.prepare(EMAIL_TEMPLATE_SCHEMA).run(); await db.prepare(EVENT_EMAIL_SCHEMA).run(); })();
+    promise = (async () => { await db.prepare(EMAIL_TEMPLATE_SCHEMA).run(); await db.prepare(EVENT_EMAIL_SCHEMA).run(); await db.prepare(EMAIL_DESIGN_SCHEMA).run(); })();
     ready.set(db, promise);
     promise.catch(() => ready.delete(db));
   }
@@ -29,10 +38,11 @@ export async function setEventEmailTemplate(db: D1Database, raceId: string, id: 
 export async function emailContext(db: D1Database, runnerId: string) {
   await ensureEmailTemplateSchema(db);
   const row = await db.prepare(`SELECT ru.*, r.name AS event_name, r.event_date, r.location AS event_location, r.field_mapping,
-    et.name AS email_name, et.subject AS email_subject, et.message AS email_message FROM Runners ru JOIN Races r ON r.id = ru.race_id
+    et.name AS email_name, et.subject AS email_subject, et.message AS email_message, ed.design_json FROM Runners ru JOIN Races r ON r.id = ru.race_id
     LEFT JOIN EventEmailTemplates ee ON ee.race_id = r.id LEFT JOIN EmailTemplates et ON et.id = ee.email_template_id
+    LEFT JOIN EmailTemplateDesigns ed ON ed.email_template_id = et.id
     WHERE ru.id = ?`).bind(runnerId).first<any>();
   if (!row) throw new Error('Participant event not found');
   return { runner: row, event: { name: row.event_name, event_date: row.event_date, location: row.event_location, field_mapping: row.field_mapping },
-    template: row.email_subject === null ? undefined : { name: row.email_name, subject: row.email_subject, message: row.email_message } as EmailTemplateContent };
+    template: row.email_subject === null ? undefined : { name: row.email_name, subject: row.email_subject, message: row.email_message, design: parseEmailDesignJson(row.design_json) } as EmailTemplateContent };
 }
