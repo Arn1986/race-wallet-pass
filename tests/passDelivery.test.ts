@@ -2,8 +2,22 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
-import worker, { type Env } from '../worker/index.ts';
+import rawWorker, { type Env } from '../worker/index.ts';
+import { accessConfig, accessToken } from './accessFixture.ts';
 import { createPassLink, deliverPass, deviceWallet, storeApplePass } from '../worker/passDelivery.ts';
+
+// Existing behavior tests run through the production gate with a genuinely signed JWT.
+const worker = {
+  ...rawWorker,
+  fetch(request: Request, env: Env, context: any) {
+    if (new URL(request.url).origin === accessConfig.ADMIN_DOMAIN) {
+      const headers = new Headers(request.headers);
+      headers.set('Cf-Access-Jwt-Assertion', accessToken);
+      request = new Request(request, { headers });
+    }
+    return rawWorker.fetch(request, env, context);
+  },
+};
 
 function fixture() {
   const sqlite = new DatabaseSync(':memory:');
@@ -16,6 +30,7 @@ function fixture() {
   const objects = new Map<string, Uint8Array>();
   let failStorage = false;
   const env = {
+    ...accessConfig,
     DB: {
       async batch(statements: any[]) {
         sqlite.exec('BEGIN');
@@ -124,6 +139,13 @@ test('D1 legacy package migrates privately; unavailable storage returns 503 with
 
 test('immediate issuance saves private package before Resend sends the first-party token link', async () => {
   const f = fixture(), originalFetch = globalThis.fetch;
+  f.sqlite.exec("INSERT INTO SystemSettings(key,value) VALUES ('publicDomain','https://example.com')");
+  const settings = await worker.fetch(new Request('https://example.com/api/settings'), f.env, context);
+  assert.equal((await settings.json() as any).data.publicDomain, f.env.PUBLIC_DOMAIN);
+  const badDomain = await worker.fetch(new Request('https://example.com/api/settings', {
+    method: 'POST', body: JSON.stringify({ publicDomain: 'https://example.com' }),
+  }), f.env, context);
+  assert.equal(badDomain.status, 400);
   let email: any;
   globalThis.fetch = async (input, init) => {
     if (String(input).includes('api.walletwallet.dev')) return Response.json({ serialNumber: 'ww-new', applePass: signedBase64,
@@ -196,8 +218,8 @@ test('organizer link creation and explicit sync use private storage and recipien
     assert.deepEqual(f.objects.get('passes/runner/pass.pkpass'), signedBytes);
     const link = await worker.fetch(new Request('https://example.com/api/pass/link/runner', { method: 'POST' }), f.env, context);
     const json: any = await link.json();
-    assert.match(json.passUrl, /^\/[A-Za-z0-9_-]{43}$/);
-    const apple = await worker.fetch(new Request(`https://example.com${json.passUrl}/apple`), f.env, context);
+    assert.match(json.passUrl, /^https:\/\/walletpass\.3fstriders\.org\/[A-Za-z0-9_-]{43}$/);
+    const apple = await worker.fetch(new Request(`${json.passUrl}/apple`), f.env, context);
     assert.deepEqual(new Uint8Array(await apple.arrayBuffer()), signedBytes);
   } finally { globalThis.fetch = originalFetch; }
 });

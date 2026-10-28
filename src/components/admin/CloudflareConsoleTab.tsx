@@ -644,12 +644,12 @@ WALLETWALLET_API_URL = "https://api.walletwallet.dev"`;
                 <input
                   type="text"
                   value={settings.publicDomain}
-                  onChange={(e) => setSettings({ ...settings, publicDomain: e.target.value })}
-                  placeholder={typeof window !== 'undefined' ? window.location.origin : 'https://your-app.pages.dev'}
+                  readOnly
+                  placeholder="https://walletpass.3fstriders.org"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 font-mono text-white outline-none"
                 />
                 <p className="text-[11px] text-slate-500 mt-1">
-                  Detected live origin: <span className="text-sky-400 font-mono">{typeof window !== 'undefined' ? window.location.origin : ''}</span>. Links in outgoing emails will use this address.
+                  Participant links use this public address. Change PUBLIC_DOMAIN in wrangler.toml to update it.
                 </p>
               </div>
 

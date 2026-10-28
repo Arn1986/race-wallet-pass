@@ -1,10 +1,11 @@
+import { authorizeRequest, PASS_PATH, type AccessConfig } from './adminAccess.ts';
 import { validateEmailTemplate, renderPassEmail } from '../server/emailTemplates.ts';
 import { ensureEmailTemplateSchema, selectedTemplateExists, setEventEmailTemplate, emailContext } from './emailTemplateStore.ts';
 import { importAthletes, importStatus, retryEnqueue } from './importJobs.ts';
 import { buildWalletWalletPayload, validateTemplateSchema } from '../server/walletPayload.ts';
 import { createPassLink, deliverPass, ensureStoredPass, resolvePassLink, storeApplePass } from './passDelivery.ts';
 
-export interface Env {
+export interface Env extends AccessConfig {
   DB: D1Database;
   ASSETS_BUCKET: R2Bucket;
   PASSES_BUCKET: R2Bucket;
@@ -156,18 +157,9 @@ async function sendPassEmail(options: {
   // 1. Resolve Resend API Key: Check Worker secret first, then D1 SystemSettings
   const resendApiKey = env.RESEND_API_KEY || (await getSystemSetting(env, 'resendApiKey'));
 
-  // 2. Resolve Public Domain for magic pass link:
-  const savedDomain = await getSystemSetting(env, 'publicDomain');
-  let publicDomain = '';
-  if (savedDomain && savedDomain.trim()) {
-    publicDomain = savedDomain.trim().replace(/\/$/, '');
-  } else if (env.PUBLIC_DOMAIN && env.PUBLIC_DOMAIN.trim()) {
-    publicDomain = env.PUBLIC_DOMAIN.trim().replace(/\/$/, '');
-  } else if (requestOrigin && !requestOrigin.includes('localhost') && !requestOrigin.includes('127.0.0.1')) {
-    publicDomain = requestOrigin.replace(/\/$/, '');
-  } else {
-    publicDomain = 'https://walletpass.3fstriders.org';
-  }
+  // This must match the public routing gate, never the admin request origin
+  // or a legacy D1 setting saved before the hostnames were separated.
+  const publicDomain = new URL(env.PUBLIC_DOMAIN).origin;
 
   const pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runnerId).first<any>();
   if (!pass || pass.status !== 'issued') return { success: false, error: 'An issued pass is required before sending email' };
@@ -431,24 +423,29 @@ export default {
     const url = new URL(request.url);
     const { pathname, searchParams } = url;
 
+    // Run before assets, CORS, or any API/database operations.
+    const accessDenied = await authorizeRequest(request, env);
+    if (accessDenied) return accessDenied;
+
     // CORS Headers for API
     const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': url.origin,
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Cache-Control': 'private, no-store',
     };
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
 
-    const deliveryMatch = pathname.match(/^\/([A-Za-z0-9_-]{43})(?:\/(apple|google))?$/);
+    const deliveryMatch = pathname.match(PASS_PATH);
     if (deliveryMatch) {
       try { return await deliverPass(request, env, deliveryMatch[1], deliveryMatch[2]); }
       catch { return new Response('Pass service temporarily unavailable', { status: 503, headers: { 'Cache-Control': 'private, no-store' } }); }
     }
     if (pathname.startsWith('/pass/')) {
-      return new Response('This link has been replaced. Please request a new email at /lookup.', {
+      return new Response('This link has been replaced. Please contact the event organizer for a new email.', {
         status: 410, headers: { 'Cache-Control': 'private, no-store' },
       });
     }
@@ -507,7 +504,7 @@ export default {
         if (!pass || pass.status !== 'issued') return Response.json({ success: false, error: 'An issued pass is required' }, { status: 409 });
         await ensureStoredPass(env, pass);
         const token = await createPassLink(env, runnerId);
-        return Response.json({ success: true, passUrl: `/${token}` }, { headers: { 'Cache-Control': 'private, no-store' } });
+        return Response.json({ success: true, passUrl: `${new URL(env.PUBLIC_DOMAIN).origin}/${token}` }, { headers: { 'Cache-Control': 'private, no-store' } });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 503 });
       }
@@ -1383,8 +1380,7 @@ export default {
         const rawApiUrl = env.WALLETWALLET_API_URL || (await getSystemSetting(env, 'walletwalletApiUrl')) || 'https://api.walletwallet.dev';
         const walletwalletApiUrl = normalizeWalletWalletUrl(rawApiUrl);
         const walletwalletPlan = (await getSystemSetting(env, 'walletwalletPlan')) || env.WALLETWALLET_PLAN || 'free';
-        const savedDomain = await getSystemSetting(env, 'publicDomain');
-        const publicDomain = savedDomain || (env.PUBLIC_DOMAIN && !env.PUBLIC_DOMAIN.includes('3fstriders.org') ? env.PUBLIC_DOMAIN : url.origin);
+        const publicDomain = new URL(env.PUBLIC_DOMAIN).origin;
 
         return Response.json({
           success: true,
@@ -1411,6 +1407,10 @@ export default {
         await ensureD1Bootstrap(env);
         const body: any = await request.json();
         const { walletwalletApiKey, walletwalletApiUrl, walletwalletPlan, resendApiKey, emailFrom, publicDomain } = body;
+
+        if (publicDomain !== undefined && publicDomain.trim().replace(/\/$/, '') !== new URL(env.PUBLIC_DOMAIN).origin) {
+          return Response.json({ success: false, error: 'Public domain is controlled by PUBLIC_DOMAIN in wrangler.toml. Use the participant hostname, not the admin hostname.' }, { status: 400, headers: corsHeaders });
+        }
 
         if (walletwalletApiKey !== undefined && !walletwalletApiKey.includes('••••')) {
           await setSystemSetting(env, 'walletwalletApiKey', walletwalletApiKey.trim());
