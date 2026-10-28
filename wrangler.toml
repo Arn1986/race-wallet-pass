@@ -43,7 +43,7 @@ PUBLIC_DOMAIN = "https://walletpass.3fstriders.org"
 ADMIN_DOMAIN = "https://admin-walletpass.3fstriders.org"
 # Fill these from your Cloudflare Access application before deploying.
 # These are public configuration values, not API keys.
-ACCESS_TEAM_DOMAIN = ""
-ACCESS_AUD = ""
+ACCESS_TEAM_DOMAIN = "titotito.cloudflareaccess.com"
+ACCESS_AUD = "71bc2ed888f347fff7a4c637325a9db58e3d0c9e9d9bbf5089dcd03e39d58fdf"
 WALLETWALLET_API_URL = "https://api.walletwallet.dev"
 EMAIL_FROM = "3F Striders<noreply@notification.3fstriders.org>"
