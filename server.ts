@@ -1,3 +1,4 @@
+import { validateEmailTemplate, renderPassEmail, type EmailTemplate } from './server/emailTemplates.ts';
 import { buildWalletWalletPayload, validateTemplateSchema } from './server/walletPayload.ts';
 import express from 'express';
 import path from 'path';
@@ -554,11 +555,13 @@ app.get('/api/races/:id', (req, res) => {
 
 app.post('/api/races', (req, res) => {
   try {
-    const { name, template_id, event_date, location, field_mapping, org_id } = req.body;
+    const { name, template_id, event_date, location, field_mapping, org_id, email_template_id } = req.body;
     if (!name || !template_id) {
       return res.status(400).json({ success: false, error: 'name and template_id are required' });
     }
+    if (email_template_id && !emailTemplates.has(email_template_id)) return res.status(400).json({ success: false, error: 'Email template not found' });
     const race = d1Db.createRace({
+      email_template_id: email_template_id || null,
       org_id: org_id || 'org-pacific-sports-2026',
       template_id,
       name,
@@ -590,6 +593,36 @@ app.delete('/api/races/:id', (req, res) => {
 // -----------------------------------------------------------------------------
 // 8. Templates Endpoints
 // -----------------------------------------------------------------------------
+// Local preview storage mirrors the production CRUD API; it resets on server restart.
+const emailTemplates = new Map<string, EmailTemplate>();
+app.get('/api/email-templates', (_req, res) => res.json({ success: true, data: [...emailTemplates.values()].map(template => ({
+  ...template, event_count: d1Db.getRaces().filter(race => race.email_template_id === template.id).length,
+})) }));
+app.post('/api/email-templates', (req, res) => {
+  try {
+    const content = validateEmailTemplate(req.body), id = `email-${crypto.randomUUID()}`;
+    const template = { ...content, id }; emailTemplates.set(id, template);
+    return res.status(201).json({ success: true, data: template });
+  } catch (err: any) { return res.status(400).json({ success: false, error: err.message }); }
+});
+app.put('/api/email-templates/:id', (req, res) => {
+  try {
+    if (!emailTemplates.has(req.params.id)) return res.status(404).json({ success: false, error: 'Email template not found' });
+    const template = { ...validateEmailTemplate(req.body), id: req.params.id }; emailTemplates.set(template.id, template);
+    return res.json({ success: true, data: template });
+  } catch (err: any) { return res.status(400).json({ success: false, error: err.message }); }
+});
+app.delete('/api/email-templates/:id', (req, res) => {
+  if (!emailTemplates.has(req.params.id)) return res.status(404).json({ success: false, error: 'Email template not found' });
+  if (d1Db.getRaces().some(race => race.email_template_id === req.params.id)) return res.status(409).json({ success: false, error: 'Choose another template or the default for assigned events first' });
+  emailTemplates.delete(req.params.id); return res.json({ success: true });
+});
+app.put('/api/races/:id/email-template', (req, res) => {
+  if (!Object.hasOwn(req.body, 'email_template_id') || req.body.email_template_id && !emailTemplates.has(req.body.email_template_id)) return res.status(400).json({ success: false, error: 'Email template not found' });
+  const race = d1Db.updateRace(req.params.id, { email_template_id: req.body.email_template_id || null });
+  return res.status(race ? 200 : 404).json({ success: !!race, data: race, error: race ? undefined : 'Event not found' });
+});
+
 app.get('/api/templates', (req, res) => {
   const templates = d1Db.getTemplates();
   return res.json({ success: true, data: templates });
@@ -657,7 +690,12 @@ async function dispatchPassEmailServer(options: {
   const resendApiKey = d1Db.settings.resendApiKey;
   const domain = (d1Db.settings.publicDomain || origin || 'https://walletpass.3fstriders.org').replace(/\/$/, '');
   const passUrl = `${domain}/pass/${runnerId}`;
-  const eventTitle = raceName || 'Official Athletic Event';
+  const runner = d1Db.getRunnerById(runnerId);
+  const race = runner ? d1Db.getRaceById(runner.race_id) : null;
+  const rendered = renderPassEmail({ passUrl, template: race?.email_template_id ? emailTemplates.get(race.email_template_id) : undefined,
+    runner: runner || { id: runnerId, first_name: firstName, last_name: '', email: to },
+    event: { name: race?.name || raceName || 'Official Athletic Event', event_date: race?.event_date, location: race?.location, field_mapping: race?.field_mapping },
+  });
 
   if (!resendApiKey) {
     return {
@@ -667,44 +705,6 @@ async function dispatchPassEmailServer(options: {
       passUrl,
     };
   }
-
-  const googleButtonHtml = googleSaveUrl
-    ? `<a href="${googleSaveUrl}" style="background-color: #1e293b; border: 1px solid #475569; color: #ffffff; font-weight: 700; font-size: 14px; padding: 14px 24px; border-radius: 12px; text-decoration: none; display: inline-block; margin: 6px;">
-        Save to Google Wallet →
-       </a>`
-    : '';
-
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <head><meta charset="utf-8"></head>
-    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0f172a; color: #ffffff; padding: 32px 16px;">
-      <div style="max-width: 560px; margin: 0 auto; background: #1e293b; border-radius: 20px; overflow: hidden; border: 1px solid #334155;">
-        <div style="background: linear-gradient(135deg, #0284c7, #2563eb); padding: 28px 24px; text-align: center;">
-          <h1 style="margin: 0; font-size: 20px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;">${eventTitle}</h1>
-          <p style="margin: 6px 0 0; font-size: 13px; color: #e0f2fe;">Official Digital Participant Pass</p>
-        </div>
-        <div style="padding: 28px 24px;">
-          <p style="margin: 0 0 16px; font-size: 15px; color: #f1f5f9;">Hello <strong>${firstName}</strong>,</p>
-          <p style="margin: 0 0 24px; font-size: 14px; line-height: 1.6; color: #cbd5e1;">
-            Your verified event pass is ready! You can add it directly to <strong>Apple Wallet</strong> or <strong>Google Wallet</strong> for real-time race updates, start wave alerts, and chute check-in.
-          </p>
-          <div style="text-align: center; margin: 28px 0;">
-            <a href="${passUrl}" style="background-color: #38bdf8; color: #0f172a; font-weight: 700; font-size: 15px; padding: 15px 30px; border-radius: 12px; text-decoration: none; display: inline-block; margin: 6px; box-shadow: 0 4px 14px rgba(56,189,248,0.3);">
-              View & Add to Apple/Google Wallet →
-            </a>
-          </div>
-          <p style="margin: 20px 0 0; font-size: 12px; color: #94a3b8; text-align: center;">
-            Direct pass link: <a href="${passUrl}" style="color: #38bdf8; word-break: break-all;">${passUrl}</a>
-          </p>
-        </div>
-        <div style="background: #0f172a; padding: 16px 24px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #334155;">
-          ${eventTitle} • Official Participant Portal
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
 
   const fromAddress = d1Db.settings.emailFrom || process.env.EMAIL_FROM || 'Pacific Athletic Series <passes@notification.3fstriders.org>';
 
@@ -718,8 +718,9 @@ async function dispatchPassEmailServer(options: {
       body: JSON.stringify({
         from: fromAddress,
         to: [to],
-        subject: `Your ${eventTitle} Digital Pass is Ready!`,
-        html,
+        subject: rendered.subject,
+        html: rendered.html,
+        text: rendered.text,
       }),
     });
 
@@ -735,8 +736,9 @@ async function dispatchPassEmailServer(options: {
           body: JSON.stringify({
             from: 'Wallet Pass <onboarding@resend.dev>',
             to: [to],
-            subject: `Your ${eventTitle} Digital Pass is Ready!`,
-            html,
+            subject: rendered.subject,
+            html: rendered.html,
+        text: rendered.text,
           }),
         });
         const retryJson: any = await retry.json();
@@ -744,7 +746,7 @@ async function dispatchPassEmailServer(options: {
           d1Db.logEmail({
             runner_id: runnerId,
             to,
-            subject: `Your ${eventTitle} Digital Pass is Ready!`,
+            subject: rendered.subject,
             pass_url: passUrl,
           });
           return { success: true, resendId: retryJson.id, passUrl };
@@ -762,7 +764,7 @@ async function dispatchPassEmailServer(options: {
     d1Db.logEmail({
       runner_id: runnerId,
       to,
-      subject: `Your ${eventTitle} Digital Pass is Ready!`,
+      subject: rendered.subject,
       pass_url: passUrl,
     });
     return { success: true, resendId: resJson.id, passUrl };

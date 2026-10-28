@@ -435,3 +435,79 @@ test('artwork and sharing flags survive template save/reload and reach immediate
     assert.equal(body.sharingProhibited, false);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('email templates can be reused across events, renamed, detached, and deleted safely', async () => {
+  const f = fixture();
+  const create = await worker.fetch(new Request('https://example.com/api/email-templates', { method: 'POST', body: JSON.stringify({
+    name: 'Welcome runners', subject: 'Hello {{first_name}}', message: 'Welcome to {{event_name}}!',
+  }) }), f.env, context);
+  assert.equal(create.status, 201); const template = (await create.json() as any).data;
+  const assign = (id: string, templateId: string | null) => worker.fetch(new Request(`https://example.com/api/races/${id}/email-template`, { method: 'PUT', body: JSON.stringify({ email_template_id: templateId }) }), f.env, context);
+  assert.equal((await assign('race', template.id)).status, 200);
+  const event = await worker.fetch(new Request('https://example.com/api/races', { method: 'POST', body: JSON.stringify({
+    name: 'Second event', template_id: 'tpl', email_template_id: template.id,
+  }) }), f.env, context);
+  assert.equal(event.status, 200); const eventData = (await event.json() as any).data;
+  assert.equal(eventData.email_template_id, template.id);
+  const list = await worker.fetch(new Request('https://example.com/api/email-templates'), f.env, context);
+  assert.equal((await list.json() as any).data[0].event_count, 2);
+  const races = await worker.fetch(new Request('https://example.com/api/races'), f.env, context);
+  assert.ok((await races.json() as any).data.every((race: any) => race.email_template_id === template.id));
+  const remove = () => worker.fetch(new Request(`https://example.com/api/email-templates/${template.id}`, { method: 'DELETE' }), f.env, context);
+  assert.equal((await remove()).status, 409);
+  const missing = await assign('race', 'does-not-exist'); assert.equal(missing.status, 400);
+  assert.equal(f.sqlite.prepare('SELECT email_template_id FROM EventEmailTemplates WHERE race_id = ?').get('race')!.email_template_id, template.id);
+  await assign('race', null); await assign(eventData.id, null);
+  assert.equal((await remove()).status, 200);
+});
+
+test('event-specific messages and mandatory secure CTA are used for resends, lookup, immediate and queued issuance', async () => {
+  const f = fixture(), originalFetch = globalThis.fetch;
+  f.sqlite.prepare('UPDATE Passes SET apple_pass_base64 = ?').run(signedBase64);
+  f.sqlite.exec(`INSERT INTO EmailTemplates(id,name,subject,message) VALUES
+    ('email-a','Event A','A pass for {{first_name}}','A message for {{full_name}}. Bib {{bib}}.'),
+    ('email-b','Event B','B: {{event_name}}','B message for {{email}}. Wave {{wave}}.');
+    INSERT INTO EventEmailTemplates(race_id,email_template_id) VALUES ('race','email-a');`);
+  const emails: any[] = [];
+  let queued: any[] = [];
+  f.env.PASS_QUEUE = { async sendBatch(messages: any[]) { queued = messages; } } as any;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('api.walletwallet.dev')) return Response.json({ serialNumber: crypto.randomUUID(), applePass: signedBase64, googleSaveUrl: 'https://pay.google.com/gp/v/save/test' });
+    emails.push(JSON.parse(String(init?.body))); return Response.json({ id: 'email-id' });
+  };
+  try {
+    const resend = await worker.fetch(new Request('https://example.com/api/runner/send-email', { method: 'POST', body: JSON.stringify({ runner_id: 'runner' }) }), f.env, context);
+    assert.equal(resend.status, 200); assert.equal(emails[0].subject, 'A pass for First');
+    assert.ok(emails[0].html.includes('A message for First Last.'));
+    const updated = await worker.fetch(new Request('https://example.com/api/email-templates/email-a', { method: 'PUT', body: JSON.stringify({ name: 'Updated A', subject: 'Updated A', message: 'New A message' }) }), f.env, context);
+    assert.equal(updated.status, 200);
+    await worker.fetch(new Request('https://example.com/api/lookup', { method: 'POST', body: JSON.stringify({ email: 'runner@example.com' }) }), f.env, context);
+    assert.equal(emails[1].subject, 'Updated A');
+    // Switch the event to another template; new passes and queue jobs read that event assignment.
+    await worker.fetch(new Request('https://example.com/api/races/race/email-template', { method: 'PUT', body: JSON.stringify({ email_template_id: 'email-b' }) }), f.env, context);
+    await worker.fetch(new Request('https://example.com/api/runner/create', { method: 'POST', body: JSON.stringify({ race_id: 'race', first_name: 'New', last_name: 'Runner', email: 'new-email@example.com' }) }), f.env, context);
+    assert.ok(emails[2].subject.startsWith('B: ')); assert.ok(emails[2].html.includes('B message for new-email@example.com.'));
+    await worker.fetch(new Request('https://example.com/api/import', { method: 'POST', body: JSON.stringify({ race_id: 'race', rows: [{ first_name: 'Bulk', last_name: 'Runner', email: 'bulk-email@example.com', wave: 'C' }] }) }), f.env, context);
+    await worker.queue({ messages: queued.map(message => ({ ...message, attempts: 1, ack() {}, retry() { assert.fail('Email template issuance should succeed'); } })) } as any, f.env);
+    assert.ok(emails[3].html.includes('B message for bulk-email@example.com. Wave C.'));
+    for (const email of emails) {
+      assert.ok(email.html.includes('Download your wallet pass'));
+      assert.match(email.html, /href="https:\/\/walletpass\.3fstriders\.org\/[A-Za-z0-9_-]{43}"/);
+      assert.ok(email.text.includes('Download your wallet pass:'));
+      assert.ok(!email.html.includes('walletwallet.dev'));
+    }
+    // No assignment restores the default invitation instead of leaving recipients without a CTA.
+    await worker.fetch(new Request('https://example.com/api/races/race/email-template', { method: 'PUT', body: JSON.stringify({ email_template_id: null }) }), f.env, context);
+    await worker.fetch(new Request('https://example.com/api/runner/send-email', { method: 'POST', body: JSON.stringify({ runner_id: 'runner' }) }), f.env, context);
+    assert.ok(emails[4].html.includes('Your pass for Race &lt;script&gt; is ready!'));
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('email-template validation and invalid event assignment never create broken templates/events', async () => {
+  const f = fixture();
+  const create = await worker.fetch(new Request('https://example.com/api/email-templates', { method: 'POST', body: JSON.stringify({ name: 'Bad', subject: 'Hi', message: '{{typo}}' }) }), f.env, context);
+  assert.equal(create.status, 400);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM EmailTemplates').get()!.n, 0);
+  const event = await worker.fetch(new Request('https://example.com/api/races', { method: 'POST', body: JSON.stringify({ name: 'Bad event', template_id: 'tpl', email_template_id: 'missing' }) }), f.env, context);
+  assert.equal(event.status, 400); assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM Races').get()!.n, 1);
+});

@@ -1,3 +1,4 @@
+import type { EmailTemplate } from '../../../server/emailTemplates.ts';
 import React, { useState, useEffect } from 'react';
 import { Race, Runner, PassTemplate } from '../../types/index.ts';
 import { RunnerEditorModal } from './RunnerEditorModal.tsx';
@@ -33,6 +34,10 @@ interface RacesTabProps {
 
 export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigateTab }) => {
   const [races, setRaces] = useState<Race[]>([]);
+  const [emailTemplates, setEmailTemplates] = useState<EmailTemplate[]>([]);
+  const [eventEmailId, setEventEmailId] = useState('');
+  const [savingEventEmail, setSavingEventEmail] = useState(false);
+  const [newRaceEmailId, setNewRaceEmailId] = useState('');
   const [templates, setTemplates] = useState<PassTemplate[]>([]);
   const [selectedRaceId, setSelectedRaceId] = useState<string>('');
   const [runners, setRunners] = useState<Runner[]>([]);
@@ -101,6 +106,25 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
     }
   };
 
+  const fetchEmailTemplates = async () => {
+    try {
+      const response = await fetch('/api/email-templates'); const json = await response.json();
+      if (!response.ok || !json.success) throw new Error(json.error || 'Could not load email templates');
+      setEmailTemplates(json.data);
+    } catch (err: any) { setNotificationMsg({ type: 'error', text: err.message }); }
+  };
+  useEffect(() => { setEventEmailId(races.find(race => race.id === selectedRaceId)?.email_template_id || ''); }, [selectedRaceId, races]);
+  const saveEventEmail = async () => {
+    setSavingEventEmail(true);
+    try {
+      const response = await fetch(`/api/races/${selectedRaceId}/email-template`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email_template_id: eventEmailId || null }) });
+      const json = await response.json();
+      if (!response.ok || !json.success) throw new Error(json.error || 'Could not save event email template');
+      await fetchRaces(); setNotificationMsg({ type: 'success', text: 'Event email template saved. It will be used for future invitations and resends.' });
+    } catch (err: any) { setNotificationMsg({ type: 'error', text: err.message }); }
+    finally { setSavingEventEmail(false); }
+  };
+
   const fetchRunners = async () => {
     try {
       setLoading(true);
@@ -120,6 +144,7 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
   useEffect(() => {
     fetchRaces();
     fetchTemplates();
+    fetchEmailTemplates();
   }, []);
 
   useEffect(() => {
@@ -153,19 +178,22 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
           event_date: newRaceDate ? new Date(newRaceDate).toISOString() : new Date().toISOString(),
           location: newRaceLocation || 'Event Grounds',
           field_mapping: defaultMapping,
+          email_template_id: newRaceEmailId || null,
         }),
       });
 
       const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Could not create event');
       if (json.success) {
         setShowCreateRaceModal(false);
         setNewRaceName('');
         setNewRaceLocation('');
+        setNewRaceEmailId('');
         await fetchRaces();
         setSelectedRaceId(json.data.id);
       }
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      setNotificationMsg({ type: 'error', text: err.message || 'Could not create event' });
     }
   };
 
@@ -481,6 +509,15 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
         })}
       </div>
 
+      {selectedRaceId && <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 space-y-3">
+        <label htmlFor="event-email-template" className="block font-bold text-white">Email template for {currentRace?.name || 'this event'}</label>
+        <div className="flex flex-col sm:flex-row gap-3"><select id="event-email-template" value={eventEmailId} disabled={savingEventEmail} onChange={event => setEventEmailId(event.target.value)} className="flex-1 rounded-xl bg-slate-950 border border-slate-700 p-3 text-sm text-white">
+          <option value="">Default wallet invitation</option>{emailTemplates.map(template => <option key={template.id} value={template.id}>{template.name}</option>)}
+        </select><button type="button" onClick={saveEventEmail} disabled={savingEventEmail} className="px-4 py-3 rounded-xl bg-sky-500 font-bold text-slate-950 disabled:opacity-50">{savingEventEmail ? 'Saving…' : 'Save Email Template'}</button></div>
+        <p className="text-xs text-slate-400">Used for individual invitations, CSV imports, and resends. The wallet download button is always included below your message.</p>
+        <button type="button" onClick={() => onNavigateTab('email-templates')} className="text-xs text-sky-400 underline">Create or edit email templates</button>
+      </div>}
+
       {/* Runner Table Section */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5">
@@ -772,6 +809,13 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                   onChange={(e) => setNewRaceName(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 text-white outline-none"
                 />
+              </div>
+
+              <div>
+                <label htmlFor="new-event-email" className="block uppercase font-bold text-slate-400 mb-1">Email Template</label>
+                <select id="new-event-email" value={newRaceEmailId} onChange={event => setNewRaceEmailId(event.target.value)} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white">
+                  <option value="">Default wallet invitation</option>{emailTemplates.map(template => <option key={template.id} value={template.id}>{template.name}</option>)}
+                </select>
               </div>
 
               <div>

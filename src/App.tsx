@@ -1,3 +1,4 @@
+import { EmailTemplatesTab } from './components/admin/EmailTemplatesTab.tsx';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -12,6 +13,7 @@ import { CloudflareConsoleTab } from './components/admin/CloudflareConsoleTab.ts
 import { PassLandingPage } from './components/public/PassLandingPage.tsx';
 import { LookupPage } from './components/public/LookupPage.tsx';
 import {
+  Mail,
   LayoutDashboard,
   Trophy,
   Palette,
@@ -28,7 +30,7 @@ import {
 export default function App() {
   // Navigation State
   const [currentRoute, setCurrentRoute] = useState<'admin' | 'pass' | 'lookup'>('admin');
-  const [activeAdminTab, setActiveAdminTab] = useState<'dashboard' | 'races' | 'templates' | 'import' | 'cloudflare'>('dashboard');
+  const [activeAdminTab, setActiveAdminTab] = useState<'dashboard' | 'races' | 'templates' | 'email-templates' | 'import' | 'cloudflare'>('dashboard');
   const [currentRunnerId, setCurrentRunnerId] = useState<string>('run-marathon-1042');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -59,6 +61,7 @@ export default function App() {
 
       // Check admin subtabs in hash
       if (hash.includes('races')) setActiveAdminTab('races');
+      else if (hash.includes('email-templates')) setActiveAdminTab('email-templates');
       else if (hash.includes('templates')) setActiveAdminTab('templates');
       else if (hash.includes('import')) setActiveAdminTab('import');
       else if (hash.includes('cloudflare')) setActiveAdminTab('cloudflare');
@@ -192,6 +195,9 @@ export default function App() {
               <span>Pass Studio</span>
             </button>
 
+            <button onClick={() => navigateToAdmin('email-templates')} className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 ${activeAdminTab === 'email-templates' ? 'bg-slate-900 text-sky-400 border border-slate-800' : 'text-slate-400 hover:text-white'}`}>
+              <Mail className="w-4 h-4" /><span>Email Templates</span>
+            </button>
             <button
               onClick={() => navigateToAdmin('import')}
               className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer ${
@@ -277,6 +283,9 @@ export default function App() {
               <Palette className="w-4 h-4 text-sky-400" />
               <span>Pass Studio</span>
             </button>
+            <button onClick={() => navigateToAdmin('email-templates')} className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 ${activeAdminTab === 'email-templates' ? 'bg-slate-900 text-sky-400 border border-slate-800' : 'text-slate-400 hover:text-white'}`}>
+              <Mail className="w-4 h-4" /><span>Email Templates</span>
+            </button>
             <button
               onClick={() => navigateToAdmin('import')}
               className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-900 flex items-center space-x-2"
@@ -320,6 +329,7 @@ export default function App() {
         )}
 
         {activeAdminTab === 'templates' && <TemplatesTab />}
+        {activeAdminTab === 'email-templates' && <EmailTemplatesTab />}
 
         {activeAdminTab === 'import' && (
           <CsvUploaderTab

@@ -147,6 +147,8 @@ export interface PassTemplate {
 }
 
 export interface Race {
+  email_template_id?: string | null;
+  email_template_name?: string | null;
   id: string;
   org_id: string;
   template_id: string;

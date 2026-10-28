@@ -1,6 +1,8 @@
+import { validateEmailTemplate, renderPassEmail } from '../server/emailTemplates.ts';
+import { ensureEmailTemplateSchema, selectedTemplateExists, setEventEmailTemplate, emailContext } from './emailTemplateStore.ts';
 import { importAthletes, importStatus, retryEnqueue } from './importJobs.ts';
 import { buildWalletWalletPayload, validateTemplateSchema } from '../server/walletPayload.ts';
-import { createPassLink, deliverPass, ensureStoredPass, resolvePassLink, storeApplePass, escapeHtml } from './passDelivery.ts';
+import { createPassLink, deliverPass, ensureStoredPass, resolvePassLink, storeApplePass } from './passDelivery.ts';
 
 export interface Env {
   DB: D1Database;
@@ -174,7 +176,8 @@ async function sendPassEmail(options: {
   }
   const token = await createPassLink(env, runnerId);
   const passUrl = `${publicDomain}/${token}`;
-  const eventTitle = escapeHtml(raceName || 'Official Athletic Event');
+  const context = await emailContext(env.DB, runnerId);
+  const rendered = renderPassEmail({ ...context, runner: { ...context.runner, first_name: firstName || context.runner.first_name }, passUrl });
 
   if (!resendApiKey) {
     console.warn('RESEND_API_KEY not configured in Cloudflare Worker secrets or D1.');
@@ -185,38 +188,6 @@ async function sendPassEmail(options: {
       passUrl,
     };
   }
-
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <head><meta charset="utf-8"></head>
-    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0f172a; color: #ffffff; padding: 32px 16px;">
-      <div style="max-width: 560px; margin: 0 auto; background: #1e293b; border-radius: 20px; overflow: hidden; border: 1px solid #334155;">
-        <div style="background: linear-gradient(135deg, #0284c7, #2563eb); padding: 28px 24px; text-align: center;">
-          <h1 style="margin: 0; font-size: 20px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;">${eventTitle}</h1>
-          <p style="margin: 6px 0 0; font-size: 13px; color: #e0f2fe;">Official Digital Participant Pass</p>
-        </div>
-        <div style="padding: 28px 24px;">
-          <p style="margin: 0 0 16px; font-size: 15px; color: #f1f5f9;">Hello <strong>${escapeHtml(firstName)}</strong>,</p>
-          <p style="margin: 0 0 24px; font-size: 14px; line-height: 1.6; color: #cbd5e1;">
-            Your verified event pass is ready! You can add it directly to <strong>Apple Wallet</strong> or <strong>Google Wallet</strong> for real-time race updates, start wave alerts, and chute check-in.
-          </p>
-          <div style="text-align: center; margin: 28px 0;">
-            <a href="${passUrl}" style="background-color: #38bdf8; color: #0f172a; font-weight: 700; font-size: 15px; padding: 15px 30px; border-radius: 12px; text-decoration: none; display: inline-block; margin: 6px; box-shadow: 0 4px 14px rgba(56,189,248,0.3);">
-              View & Add to Apple/Google Wallet →
-            </a>
-          </div>
-          <p style="margin: 20px 0 0; font-size: 12px; color: #94a3b8; text-align: center;">
-            Direct pass link: <a href="${passUrl}" style="color: #38bdf8; word-break: break-all;">${passUrl}</a>
-          </p>
-        </div>
-        <div style="background: #0f172a; padding: 16px 24px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #334155;">
-          ${eventTitle} • Official Participant Portal
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
 
   // Resend from address: prioritize D1 user setting, then worker env.EMAIL_FROM, then notification.3fstriders.org verified domain
   const savedEmailFrom = await getSystemSetting(env, 'emailFrom');
@@ -233,8 +204,9 @@ async function sendPassEmail(options: {
       body: JSON.stringify({
         from: fromAddress,
         to: [to],
-        subject: `Your ${eventTitle} Digital Pass is Ready!`,
-        html,
+        subject: rendered.subject,
+        html: rendered.html,
+        text: rendered.text,
       }),
     });
 
@@ -251,8 +223,9 @@ async function sendPassEmail(options: {
           body: JSON.stringify({
             from: 'Wallet Pass <onboarding@resend.dev>',
             to: [to],
-            subject: `Your ${eventTitle} Digital Pass is Ready!`,
-            html,
+            subject: rendered.subject,
+            html: rendered.html,
+            text: rendered.text,
           }),
         });
         const retryJson: any = await retry.json();
@@ -388,6 +361,8 @@ async function ensureD1Bootstrap(env: Env): Promise<string> {
   try { await env.DB.prepare('ALTER TABLE Passes ADD COLUMN apple_pass_base64 TEXT').run(); } catch {}
   try { await env.DB.prepare('ALTER TABLE Passes ADD COLUMN r2_key TEXT').run(); } catch {}
 
+  await ensureEmailTemplateSchema(env.DB);
+
   // 6. Guarantee that an organization exists in the Organizations table
   let activeOrgId = DEFAULT_ORG_ID;
   try {
@@ -479,6 +454,50 @@ export default {
     }
 
     // --- API ROUTES ---
+    if (pathname === '/api/email-templates' || /^\/api\/email-templates\/[^/]+$/.test(pathname)) {
+      try {
+        await ensureD1Bootstrap(env);
+        const id = pathname === '/api/email-templates' ? null : pathname.slice('/api/email-templates/'.length);
+        if (!id && request.method === 'GET') {
+          const records = await env.DB.prepare(`SELECT et.*, (SELECT COUNT(*) FROM EventEmailTemplates ee WHERE ee.email_template_id = et.id) AS event_count
+            FROM EmailTemplates et ORDER BY et.created_at DESC, et.name`).all<any>();
+          return Response.json({ success: true, data: records.results }, { headers: { ...corsHeaders, 'Cache-Control': 'private, no-store' } });
+        }
+        if (!id && request.method === 'POST' || id && request.method === 'PUT') {
+          const content = validateEmailTemplate(await request.json());
+          if (id && !await env.DB.prepare('SELECT id FROM EmailTemplates WHERE id = ?').bind(id).first()) {
+            return Response.json({ success: false, error: 'Email template not found' }, { status: 404, headers: corsHeaders });
+          }
+          const templateId = id || `email-${crypto.randomUUID()}`;
+          if (id) await env.DB.prepare('UPDATE EmailTemplates SET name = ?, subject = ?, message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+            .bind(content.name, content.subject, content.message, id).run();
+          else await env.DB.prepare('INSERT INTO EmailTemplates (id, name, subject, message) VALUES (?, ?, ?, ?)')
+            .bind(templateId, content.name, content.subject, content.message).run();
+          const data = await env.DB.prepare('SELECT * FROM EmailTemplates WHERE id = ?').bind(templateId).first<any>();
+          return Response.json({ success: true, data }, { status: id ? 200 : 201, headers: corsHeaders });
+        }
+        if (id && request.method === 'DELETE') {
+          if (!await env.DB.prepare('SELECT id FROM EmailTemplates WHERE id = ?').bind(id).first()) return Response.json({ success: false, error: 'Email template not found' }, { status: 404, headers: corsHeaders });
+          await env.DB.prepare('DELETE FROM EmailTemplates WHERE id = ? AND NOT EXISTS (SELECT 1 FROM EventEmailTemplates WHERE email_template_id = ?)').bind(id, id).run();
+          if (await env.DB.prepare('SELECT id FROM EmailTemplates WHERE id = ?').bind(id).first()) return Response.json({ success: false, error: 'This template is selected by an event. Choose another template or the default for those events first.' }, { status: 409, headers: corsHeaders });
+          return Response.json({ success: true }, { headers: corsHeaders });
+        }
+        return Response.json({ success: false, error: 'Method not allowed' }, { status: 405, headers: corsHeaders });
+      } catch (err: any) { return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders }); }
+    }
+    const eventEmailMatch = pathname.match(/^\/api\/races\/([^/]+)\/email-template$/);
+    if (eventEmailMatch && request.method === 'PUT') {
+      try {
+        await ensureEmailTemplateSchema(env.DB);
+        const raceId = eventEmailMatch[1];
+        if (!await env.DB.prepare('SELECT id FROM Races WHERE id = ?').bind(raceId).first()) return Response.json({ success: false, error: 'Event not found' }, { status: 404, headers: corsHeaders });
+        const body: any = await request.json();
+        if (!Object.hasOwn(body, 'email_template_id') || !await selectedTemplateExists(env.DB, body.email_template_id)) return Response.json({ success: false, error: 'Select a valid email template or the default invitation' }, { status: 400, headers: corsHeaders });
+        await setEventEmailTemplate(env.DB, raceId, body.email_template_id || null);
+        return Response.json({ success: true, data: { id: raceId, email_template_id: body.email_template_id || null } }, { headers: corsHeaders });
+      } catch (err: any) { return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders }); }
+    }
+
 
     // Organizer-only endpoint: protect this with the same Access policy as the admin APIs.
     if (pathname.startsWith('/api/pass/link/') && request.method === 'POST') {
@@ -653,11 +672,13 @@ export default {
       try {
         await ensureD1Bootstrap(env);
         const query = `
-          SELECT r.*, t.name as template_name,
+          SELECT r.*, t.name as template_name, ee.email_template_id, et.name AS email_template_name,
             (SELECT COUNT(*) FROM Runners WHERE race_id = r.id) as runner_count,
             (SELECT COUNT(*) FROM Runners ru JOIN Passes p ON ru.id = p.runner_id WHERE ru.race_id = r.id AND p.status = 'issued') as issued_count
           FROM Races r
           LEFT JOIN Templates t ON r.template_id = t.id
+          LEFT JOIN EventEmailTemplates ee ON ee.race_id = r.id
+          LEFT JOIN EmailTemplates et ON et.id = ee.email_template_id
           ORDER BY r.created_at DESC
         `;
         const res = await env.DB.prepare(query).all<any>();
@@ -667,10 +688,11 @@ export default {
       }
     }
 
-    if (pathname.startsWith('/api/races/') && request.method === 'GET') {
+    if (/^\/api\/races\/[^/]+$/.test(pathname) && request.method === 'GET') {
       const raceId = pathname.replace('/api/races/', '');
       try {
-        const race = await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(raceId).first<any>();
+        await ensureEmailTemplateSchema(env.DB);
+        const race = await env.DB.prepare('SELECT r.*, ee.email_template_id FROM Races r LEFT JOIN EventEmailTemplates ee ON ee.race_id = r.id WHERE r.id = ?').bind(raceId).first<any>();
         if (!race) return Response.json({ success: false, error: 'Race not found' }, { status: 404, headers: corsHeaders });
         return Response.json({ success: true, data: race }, { headers: corsHeaders });
       } catch (err: any) {
@@ -682,10 +704,12 @@ export default {
       try {
         const confirmedOrgId = await ensureD1Bootstrap(env);
         const body: any = await request.json();
-        const { name, template_id, event_date, location, field_mapping, org_id } = body;
+        const { name, template_id, event_date, location, field_mapping, org_id, email_template_id } = body;
         if (!name || !template_id) {
           return Response.json({ success: false, error: 'Name and template_id are required' }, { status: 400, headers: corsHeaders });
         }
+
+        if (!await selectedTemplateExists(env.DB, email_template_id)) return Response.json({ success: false, error: 'Email template not found' }, { status: 400, headers: corsHeaders });
 
         // Guarantee requested or default organization exists
         let finalOrgId = confirmedOrgId;
@@ -707,7 +731,7 @@ export default {
         const raceId = `race-${crypto.randomUUID()}`;
         const mappingStr = typeof field_mapping === 'string' ? field_mapping : JSON.stringify(field_mapping || {});
 
-        await env.DB.prepare(`
+        const insertRace = env.DB.prepare(`
           INSERT INTO Races (id, org_id, template_id, name, event_date, location, field_mapping)
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `).bind(
@@ -718,9 +742,12 @@ export default {
           event_date || new Date().toISOString(),
           location || 'TBD',
           mappingStr
-        ).run();
+        );
+        const statements = [insertRace];
+        if (email_template_id) statements.push(env.DB.prepare('INSERT INTO EventEmailTemplates (race_id, email_template_id) VALUES (?, ?)').bind(raceId, email_template_id));
+        await env.DB.batch(statements);
 
-        const created = await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(raceId).first<any>();
+        const created = await env.DB.prepare('SELECT r.*, ee.email_template_id FROM Races r LEFT JOIN EventEmailTemplates ee ON ee.race_id = r.id WHERE r.id = ?').bind(raceId).first<any>();
         return Response.json({ success: true, data: created }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
