@@ -37,6 +37,9 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
   const [emailTemplates, setEmailTemplates] = useState<EmailTemplate[]>([]);
   const [eventEmailId, setEventEmailId] = useState('');
   const [savingEventEmail, setSavingEventEmail] = useState(false);
+  const [allowSharedEmails, setAllowSharedEmails] = useState(false);
+  const [savingSharedEmails, setSavingSharedEmails] = useState(false);
+  const [newRaceSharedEmails, setNewRaceSharedEmails] = useState(false);
   const [newRaceEmailId, setNewRaceEmailId] = useState('');
   const [templates, setTemplates] = useState<PassTemplate[]>([]);
   const [selectedRaceId, setSelectedRaceId] = useState<string>('');
@@ -114,6 +117,17 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
     } catch (err: any) { setNotificationMsg({ type: 'error', text: err.message }); }
   };
   useEffect(() => { setEventEmailId(races.find(race => race.id === selectedRaceId)?.email_template_id || ''); }, [selectedRaceId, races]);
+  useEffect(() => { setAllowSharedEmails(Boolean(races.find(race => race.id === selectedRaceId)?.allow_duplicate_emails)); }, [selectedRaceId, races]);
+  const saveSharedEmails = async () => {
+    setSavingSharedEmails(true);
+    try {
+      const response = await fetch(`/api/races/${selectedRaceId}/participant-settings`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ allow_duplicate_emails: allowSharedEmails }) });
+      const json = await response.json();
+      if (!response.ok || !json.success) throw new Error(json.error || 'Could not save shared-email setting');
+      await fetchRaces(); setNotificationMsg({ type: 'success', text: 'Participant email setting saved for this event.' });
+    } catch (err: any) { setNotificationMsg({ type: 'error', text: err.message }); }
+    finally { setSavingSharedEmails(false); }
+  };
   const saveEventEmail = async () => {
     setSavingEventEmail(true);
     try {
@@ -179,6 +193,7 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
           location: newRaceLocation || 'Event Grounds',
           field_mapping: defaultMapping,
           email_template_id: newRaceEmailId || null,
+          allow_duplicate_emails: newRaceSharedEmails,
         }),
       });
 
@@ -189,6 +204,7 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
         setNewRaceName('');
         setNewRaceLocation('');
         setNewRaceEmailId('');
+        setNewRaceSharedEmails(false);
         await fetchRaces();
         setSelectedRaceId(json.data.id);
       }
@@ -510,6 +526,11 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
       </div>
 
       {selectedRaceId && <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 space-y-3">
+        <div className="space-y-2 border-b border-slate-700 pb-4 mb-4">
+          <label className="flex gap-2 items-center text-sm font-semibold text-white"><input type="checkbox" checked={allowSharedEmails} disabled={savingSharedEmails} onChange={event => setAllowSharedEmails(event.target.checked)} />Allow participants to share an email address</label>
+          <p className="text-xs text-slate-400">Applies to manual entry and CSV imports for this event. Each participant gets a separate pass and invitation, even when emails match. Reimporting a CSV creates new participants while enabled.</p>
+          <button type="button" disabled={savingSharedEmails} onClick={saveSharedEmails} className="rounded-xl bg-slate-800 px-4 py-2 text-sm font-semibold text-sky-300 disabled:opacity-50">{savingSharedEmails ? 'Saving…' : 'Save Participant Settings'}</button>
+        </div>
         <label htmlFor="event-email-template" className="block font-bold text-white">Email template for {currentRace?.name || 'this event'}</label>
         <div className="flex flex-col sm:flex-row gap-3"><select id="event-email-template" value={eventEmailId} disabled={savingEventEmail} onChange={event => setEventEmailId(event.target.value)} className="flex-1 rounded-xl bg-slate-950 border border-slate-700 p-3 text-sm text-white">
           <option value="">Default wallet invitation</option>{emailTemplates.map(template => <option key={template.id} value={template.id}>{template.name}</option>)}
@@ -816,6 +837,8 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
                 <select id="new-event-email" value={newRaceEmailId} onChange={event => setNewRaceEmailId(event.target.value)} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white">
                   <option value="">Default wallet invitation</option>{emailTemplates.map(template => <option key={template.id} value={template.id}>{template.name}</option>)}
                 </select>
+                <label className="flex items-center gap-2 mt-4 text-sm text-slate-200"><input type="checkbox" checked={newRaceSharedEmails} onChange={event => setNewRaceSharedEmails(event.target.checked)} />Allow participants to share an email address</label>
+                <p className="text-xs text-slate-400 mt-2">Allows separate participants and passes using the same email, via manual entry or CSV.</p>
               </div>
 
               <div>

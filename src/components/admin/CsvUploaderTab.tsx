@@ -21,6 +21,8 @@ export const CsvUploaderTab: React.FC<CsvUploaderTabProps> = ({ onNavigateTab })
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [resumePending, setResumePending] = useState(false);
+  const sharedEmails = Boolean(races.find(race => race.id === raceId)?.allow_duplicate_emails);
+  useEffect(() => { if (sharedEmails) setResumePending(false); }, [sharedEmails]);
   const [response, setResponse] = useState<any>(null);
   const [batchId, setBatchId] = useState(() => { try { return localStorage.getItem('race-wallet-last-import') || ''; } catch { return ''; } });
   const [status, setStatus] = useState<any>(null);
@@ -82,7 +84,7 @@ export const CsvUploaderTab: React.FC<CsvUploaderTabProps> = ({ onNavigateTab })
     if (!raceId || !rows.length || issues.length || uploading) return;
     setUploading(true); setError(''); setResponse(null);
     try {
-      const res = await fetch('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ race_id: raceId, rows, resume_pending: resumePending }) });
+      const res = await fetch('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ race_id: raceId, rows, resume_pending: !sharedEmails && resumePending }) });
       const result = await jsonResponse(res);
       setResponse(result);
       if (result.data?.batch_id) {
@@ -123,7 +125,8 @@ export const CsvUploaderTab: React.FC<CsvUploaderTabProps> = ({ onNavigateTab })
       </div>
       <p className="text-xs text-slate-400">Required columns: <code>first_name, last_name, email</code>. Optional fields include bib_number, start_wave, race_division, corral_letter, target_pace, tshirt_size, and emergency_contact. Other columns are saved as participant data. Maximum {MAX_IMPORT_ROWS} athletes per file.</p>
       <p className="text-xs text-amber-300">Replace the sample's example.com addresses with your athletes' real email addresses before importing.</p>
-      <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={resumePending} onChange={event => setResumePending(event.target.checked)} disabled={uploading} />Retry pending athletes already saved in this event</label>
+      <p className="text-sm text-sky-200">{sharedEmails ? 'Shared emails enabled: each CSV row creates a separate participant, pass and email invitation. Reimporting this file creates more participants. Use Retry Failed Athletes below to retry the original jobs.' : 'Duplicate emails are skipped for this event. To allow shared addresses, change Participant Settings in Events & Rosters.'}</p>
+      <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={resumePending} onChange={event => setResumePending(event.target.checked)} disabled={uploading || sharedEmails} />Retry pending athletes already saved in this event</label>
       <p className="text-xs text-slate-400">Use this to recover an earlier import that saved athletes without issuing passes. Issued athletes and imports still processing are skipped.</p>
       <input type="file" accept=".csv,text/csv" onChange={handleFile} disabled={uploading} aria-label="Upload athlete CSV" className="block text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-950 file:px-3 file:py-2 file:text-sky-300" />
       {error && <div role="alert" className="p-4 rounded-xl bg-red-950/50 border border-red-800 text-red-300 text-sm flex gap-2"><AlertTriangle size={18} className="shrink-0" />{error}</div>}

@@ -147,6 +147,7 @@ export interface PassTemplate {
 }
 
 export interface Race {
+  allow_duplicate_emails?: boolean | number;
   email_template_id?: string | null;
   email_template_name?: string | null;
   id: string;

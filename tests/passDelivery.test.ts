@@ -601,3 +601,86 @@ test('signature logo and colors reach Resend in retries, immediate issuance and 
     assert.ok(!emails[4].html.includes('<img'));
   } finally { globalThis.fetch = previousFetch; }
 });
+
+test('shared-email option defaults off and controls manual create/edit with distinct participant records', async () => {
+  const f = fixture();
+  const call = (path: string, method = 'GET', body?: any) => worker.fetch(new Request(`https://example.com${path}`, {
+    method, ...(body ? { body: JSON.stringify(body) } : {}),
+  }), f.env, context);
+  const athlete = { race_id: 'race', first_name: 'Second', last_name: 'Athlete', email: ' RUNNER@example.com ', issue_immediate: false };
+  const denied = await call('/api/runner/create', 'POST', athlete);
+  assert.equal(denied.status, 409);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM Runners').get()!.n, 1);
+  const toggle = (allow: any) => call('/api/races/race/participant-settings', 'PUT', { allow_duplicate_emails: allow });
+  assert.equal((await toggle('true')).status, 400);
+  f.sqlite.exec('CREATE UNIQUE INDEX legacy_event_email ON Runners(race_id,email)');
+  assert.equal((await toggle(true)).status, 503);
+  f.sqlite.exec('DROP INDEX legacy_event_email');
+  assert.equal((await toggle(true)).status, 200);
+  const created = await call('/api/runner/create', 'POST', athlete);
+  assert.equal(created.status, 200);
+  const { data } = await created.json() as any;
+  assert.notEqual(data.runner.id, 'runner');
+  assert.equal(data.runner.email, 'runner@example.com');
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM Passes').get()!.n, 2);
+  const race = await call('/api/races/race');
+  assert.equal((await race.json() as any).data.allow_duplicate_emails, 1);
+  const list = await call('/api/races');
+  assert.equal((await list.json() as any).data[0].allow_duplicate_emails, 1);
+  assert.equal((await toggle(false)).status, 409);
+  assert.equal((await call('/api/runner/update', 'PUT', { runner_id: data.runner.id, email: 'different@example.com' })).status, 200);
+  assert.equal((await toggle(false)).status, 200);
+  assert.equal((await call('/api/runner/update', 'PUT', { runner_id: data.runner.id, email: 'RUNNER@example.com' })).status, 409);
+  assert.equal(f.sqlite.prepare('SELECT email FROM Runners WHERE id = ?').get(data.runner.id)!.email, 'different@example.com');
+  const otherEvent = await call('/api/races', 'POST', { name: 'Family event', template_id: 'tpl', allow_duplicate_emails: true });
+  assert.equal(otherEvent.status, 200);
+  const other = (await otherEvent.json() as any).data;
+  assert.equal(other.allow_duplicate_emails, 1);
+  assert.equal((await call('/api/runner/create', 'POST', { ...athlete, race_id: other.id })).status, 200);
+});
+
+test('CSV shared emails get separate queued passes, private links and personalized emails; retries keep runner IDs', async () => {
+  const f = fixture(), previousFetch = globalThis.fetch;
+  f.sqlite.exec("INSERT INTO EventParticipantSettings(race_id,allow_duplicate_emails) VALUES ('race',1)");
+  let queued: any[] = [], failQueue = true;
+  const emails: any[] = [];
+  f.env.PASS_QUEUE = { async sendBatch(messages: any[]) { if (failQueue) throw new Error('Queue offline'); queued = messages; } } as any;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('api.walletwallet.dev')) return Response.json({ serialNumber: crypto.randomUUID(), applePass: signedBase64, googleSaveUrl: 'https://pay.google.com/gp/v/save/test' });
+    emails.push(JSON.parse(String(init?.body))); return Response.json({ id: crypto.randomUUID() });
+  };
+  const call = (path: string, body: any) => worker.fetch(new Request(`https://example.com${path}`, { method: 'POST', body: JSON.stringify(body) }), f.env, context);
+  const rows = [{ first_name: 'Child', last_name: 'One', email: ' FAMILY@example.com ', bib: '101' }, { first_name: 'Child', last_name: 'Two', email: 'family@example.com', bib: '102' }];
+  try {
+    const ambiguousResume = await call('/api/import', { race_id: 'race', rows, resume_pending: true });
+    assert.equal(ambiguousResume.status, 400);
+    const imported = await call('/api/import', { race_id: 'race', rows });
+    assert.equal(imported.status, 503);
+    const result = await imported.json() as any;
+    assert.equal(result.data.total_saved, 2); assert.equal(result.data.total_skipped, 0);
+    const originalIds = f.sqlite.prepare("SELECT id FROM Runners WHERE email = 'family@example.com' ORDER BY id").all();
+    assert.equal(originalIds.length, 2);
+    failQueue = false;
+    assert.equal((await call(`/api/import/${result.data.batch_id}/retry`, {})).status, 202);
+    assert.equal(queued.length, 2);
+    assert.notEqual(queued[0].body.runner_id, queued[1].body.runner_id);
+    await worker.queue({ messages: queued.map(message => ({ ...message, attempts: 1, ack() {}, retry() { assert.fail('Shared inbox job should complete'); } })) } as any, f.env);
+    assert.equal(emails.length, 2);
+    assert.deepEqual(emails.map(email => email.to), [['family@example.com'], ['family@example.com']]);
+    const urls = emails.map(email => email.text.match(/https:\/\/walletpass\.3fstriders\.org\/[A-Za-z0-9_-]{43}/)[0]);
+    assert.notEqual(urls[0], urls[1]);
+    assert.equal(f.objects.size, 2);
+    for (const link of urls) {
+      const res = await rawWorker.fetch(new Request(link, { headers: { 'User-Agent': 'iPhone' } }), f.env, context);
+      assert.equal(res.status, 200);
+      assert.deepEqual(new Uint8Array(await res.arrayBuffer()), signedBytes);
+    }
+    assert.deepEqual(f.sqlite.prepare("SELECT id FROM Runners WHERE email = 'family@example.com' ORDER BY id").all(), originalIds);
+    const lookup = await call('/api/lookup', { email: 'family@example.com' });
+    assert.equal(lookup.status, 409); assert.equal(emails.length, 2);
+    // Reimport is explicitly a new registration in shared-email mode.
+    const again = await call('/api/import', { race_id: 'race', rows });
+    assert.equal(again.status, 202);
+    assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM Runners WHERE email = 'family@example.com'").get()!.n, 4);
+  } finally { globalThis.fetch = previousFetch; }
+});

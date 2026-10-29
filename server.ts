@@ -1,3 +1,4 @@
+import { participantEmail } from './server/participantEmails.ts';
 import { validateEmailTemplate, renderPassEmail, type EmailTemplate } from './server/emailTemplates.ts';
 import { buildWalletWalletPayload, validateTemplateSchema } from './server/walletPayload.ts';
 import express from 'express';
@@ -244,7 +245,7 @@ app.put('/api/runner/update', async (req, res) => {
       plan_note: providerUpdated ? 'D1 and WalletWallet updated.' : 'D1 updated; no issued provider pass was available to update.',
     });
   } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(String(error.message).includes('Duplicate email') ? 409 : 500).json({ success: false, error: error.message });
   }
 });
 
@@ -369,7 +370,9 @@ app.post('/api/lookup', (req, res) => {
       return res.status(400).json({ success: false, error: 'Email address is required' });
     }
 
-    const runner = d1Db.getRunnerByEmail(email, race_id);
+    const matches = d1Db.getRunners().filter(runner => runner.email.trim().toLowerCase() === String(email).trim().toLowerCase() && (!race_id || runner.race_id === race_id));
+    if (matches.length > 1) return res.status(409).json({ success: false, error: 'Multiple participants use this email. Select the athlete in the event roster and resend their invitation.' });
+    const runner = matches[0];
     if (!runner) {
       return res.status(404).json({
         success: false,
@@ -555,13 +558,15 @@ app.get('/api/races/:id', (req, res) => {
 
 app.post('/api/races', (req, res) => {
   try {
-    const { name, template_id, event_date, location, field_mapping, org_id, email_template_id } = req.body;
+    const { name, template_id, event_date, location, field_mapping, org_id, email_template_id, allow_duplicate_emails } = req.body;
     if (!name || !template_id) {
       return res.status(400).json({ success: false, error: 'name and template_id are required' });
     }
+    if (allow_duplicate_emails !== undefined && typeof allow_duplicate_emails !== 'boolean') return res.status(400).json({ success: false, error: 'allow_duplicate_emails must be true or false' });
     if (email_template_id && !emailTemplates.has(email_template_id)) return res.status(400).json({ success: false, error: 'Email template not found' });
     const race = d1Db.createRace({
       email_template_id: email_template_id || null,
+      allow_duplicate_emails: allow_duplicate_emails === true,
       org_id: org_id || 'org-pacific-sports-2026',
       template_id,
       name,
@@ -573,6 +578,15 @@ app.post('/api/races', (req, res) => {
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
+});
+
+app.put('/api/races/:id/participant-settings', (req, res) => {
+  if (typeof req.body?.allow_duplicate_emails !== 'boolean') return res.status(400).json({ success: false, error: 'allow_duplicate_emails must be true or false' });
+  try {
+    const race = d1Db.updateRace(req.params.id, { allow_duplicate_emails: req.body.allow_duplicate_emails });
+    if (!race) return res.status(404).json({ success: false, error: 'Event not found' });
+    return res.json({ success: true, data: { race_id: race.id, allow_duplicate_emails: Boolean(race.allow_duplicate_emails) } });
+  } catch (error: any) { return res.status(409).json({ success: false, error: error.message }); }
 });
 
 app.put('/api/races/:id', (req, res) => {
@@ -777,11 +791,13 @@ async function dispatchPassEmailServer(options: {
 
 app.post('/api/runner/create', async (req, res) => {
   try {
-    const { race_id, email, first_name, last_name, dynamic_data, issue_immediate } = req.body;
-    if (!race_id || !email || !first_name || !last_name) {
+    const { race_id, email: rawEmail, first_name, last_name, dynamic_data, issue_immediate } = req.body;
+    if (!race_id || !rawEmail || !first_name || !last_name) {
       return res.status(400).json({ success: false, error: 'race_id, email, first_name, and last_name are required' });
     }
 
+    let email: string;
+    try { email = participantEmail(rawEmail); } catch (error: any) { return res.status(400).json({ success: false, error: error.message }); }
     const { runner, pass } = d1Db.createRunner({
       race_id,
       email,
@@ -852,7 +868,7 @@ app.post('/api/runner/create', async (req, res) => {
       },
     });
   } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(String(error.message).includes('Duplicate email') ? 409 : 500).json({ success: false, error: error.message });
   }
 });
 

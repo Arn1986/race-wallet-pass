@@ -1,3 +1,4 @@
+import { participantEmail, DUPLICATE_EMAIL_ERROR, DISABLE_SHARED_ERROR } from './participantEmails.ts';
 import { Organization, PassTemplate, Race, Runner, Pass, QueueJob, PushNotificationLog, ResendEmailLog, R2Asset } from '../src/types/index.ts';
 
 // In-Memory Cloudflare D1 Emulation with Relational Integrity and Persistence
@@ -424,6 +425,17 @@ class D1DatabaseEmulator {
   updateRace(id: string, updates: Partial<Race>): Race | null {
     const existing = this.races.get(id);
     if (!existing) return null;
+    if (updates.allow_duplicate_emails !== undefined) {
+      if (typeof updates.allow_duplicate_emails !== 'boolean') throw new Error('allow_duplicate_emails must be true or false');
+      if (!updates.allow_duplicate_emails) {
+        const seen = new Set<string>();
+        for (const runner of this.getRunners(id)) {
+          const email = runner.email.trim().toLowerCase();
+          if (seen.has(email)) throw new Error(DISABLE_SHARED_ERROR);
+          seen.add(email);
+        }
+      }
+    }
     const updated = { ...existing, ...updates };
     this.races.set(id, updated);
     return updated;
@@ -478,6 +490,10 @@ class D1DatabaseEmulator {
     dynamic_data: Record<string, any> | string;
     issuePassImmediate?: boolean;
   }): { runner: Runner; pass: Pass } {
+    const race = this.getRaceById(data.race_id);
+    if (!race) throw new Error('Event not found');
+    data.email = participantEmail(data.email);
+    if (!race.allow_duplicate_emails && this.getRunners(data.race_id).some(runner => runner.email.trim().toLowerCase() === data.email)) throw new Error(DUPLICATE_EMAIL_ERROR);
     const id = `run-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
     const runner: Runner = {
       id,
@@ -509,7 +525,9 @@ class D1DatabaseEmulator {
   updateRunner(id: string, updates: Partial<Runner>): Runner | null {
     const existing = this.runners.get(id);
     if (!existing) return null;
+    if (updates.email !== undefined) updates.email = participantEmail(updates.email);
     const updated = { ...existing, ...updates };
+    if (!this.getRaceById(updated.race_id)?.allow_duplicate_emails && this.getRunners(updated.race_id).some(runner => runner.id !== id && runner.email.trim().toLowerCase() === updated.email.trim().toLowerCase())) throw new Error(DUPLICATE_EMAIL_ERROR);
     this.runners.set(id, updated);
     return updated;
   }

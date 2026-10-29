@@ -1,3 +1,4 @@
+import { allowsSharedEmail, hasLegacyEmailConstraint } from './participantSettings.ts';
 import type { Env } from './index.ts';
 import { MAX_IMPORT_ROWS, validateAthleteRows, type ImportIssue } from '../server/csvImport.ts';
 
@@ -16,19 +17,22 @@ export async function importAthletes(env: Env, raceId: string, rows: unknown[], 
   const race = await env.DB.prepare('SELECT id FROM Races WHERE id = ?').bind(raceId).first<any>();
   if (!race) return { status: 404, body: { success: false, error: 'The selected event does not exist' } };
   if (!env.PASS_QUEUE) return { status: 503, body: { success: false, error: 'PASS_QUEUE is not configured; no athletes were imported' } };
+  const allowDuplicates = await allowsSharedEmail(env.DB, raceId);
+  if (allowDuplicates && await hasLegacyEmailConstraint(env.DB)) return { status: 503, body: { success: false, error: 'Apply migration 0005_shared_participant_emails.sql before importing shared emails.' } };
+  if (allowDuplicates && resumePending) return { status: 400, body: { success: false, error: 'Retry pending athletes by email is unavailable when shared emails are enabled. Use Retry Failed Athletes for the original import batch instead.' } };
   const { athletes, errors } = validateAthleteRows(rows);
   const unique: typeof athletes = [], seen = new Set<string>(), skipped: ImportIssue[] = [];
   for (const athlete of athletes) {
-    if (seen.has(athlete.email)) skipped.push({ row: athlete.row, email: athlete.email, error: 'Duplicate email in this CSV' });
+    if (!allowDuplicates && seen.has(athlete.email)) skipped.push({ row: athlete.row, email: athlete.email, error: 'Duplicate email in this CSV' });
     else { seen.add(athlete.email); unique.push(athlete); }
   }
   await ensureImportJobs(env);
   const existing = new Map<string, any>();
-  for (let offset = 0; offset < unique.length; offset += 90) {
+  for (let offset = 0; !allowDuplicates && offset < unique.length; offset += 90) {
     const emails = unique.slice(offset, offset + 90).map(a => a.email);
-    const records = await env.DB.prepare(`SELECT r.id, r.email, p.status AS pass_status FROM Runners r LEFT JOIN Passes p ON p.runner_id = r.id WHERE r.race_id = ? AND LOWER(r.email) IN (${emails.map(() => '?').join(',')})`)
+    const records = await env.DB.prepare(`SELECT r.id, r.email, p.status AS pass_status FROM Runners r LEFT JOIN Passes p ON p.runner_id = r.id WHERE r.race_id = ? AND LOWER(TRIM(r.email)) IN (${emails.map(() => '?').join(',')})`)
       .bind(raceId, ...emails).all<any>();
-    for (const row of records.results) existing.set(row.email.toLowerCase(), row);
+    for (const row of records.results) existing.set(row.email.trim().toLowerCase(), row);
   }
   const active = new Set<string>();
   if (resumePending && existing.size) {

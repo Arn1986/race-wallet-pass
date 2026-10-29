@@ -1,3 +1,5 @@
+import { ensureParticipantSettings, allowsSharedEmail, hasLegacyEmailConstraint } from './participantSettings.ts';
+import { participantEmail, DUPLICATE_EMAIL_ERROR, DISABLE_SHARED_ERROR } from '../server/participantEmails.ts';
 import { authorizeRequest, PASS_PATH, type AccessConfig } from './adminAccess.ts';
 import { validateEmailTemplate, renderPassEmail } from '../server/emailTemplates.ts';
 import { ensureEmailTemplateSchema, selectedTemplateExists, setEventEmailTemplate, emailContext, emailTemplateRecord } from './emailTemplateStore.ts';
@@ -326,8 +328,7 @@ async function ensureD1Bootstrap(env: Env): Promise<string> {
         last_name TEXT NOT NULL,
         dynamic_data TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (race_id) REFERENCES Races(id) ON DELETE CASCADE,
-        UNIQUE(race_id, email)
+        FOREIGN KEY (race_id) REFERENCES Races(id) ON DELETE CASCADE
       )
     `).run();
   } catch {}
@@ -357,6 +358,7 @@ async function ensureD1Bootstrap(env: Env): Promise<string> {
   try { await env.DB.prepare('ALTER TABLE Passes ADD COLUMN r2_key TEXT').run(); } catch {}
 
   await ensureEmailTemplateSchema(env.DB);
+  await ensureParticipantSettings(env.DB);
 
   // 6. Guarantee that an organization exists in the Organizations table
   let activeOrgId = DEFAULT_ORG_ID;
@@ -490,6 +492,19 @@ export default {
         }
         return Response.json({ success: false, error: 'Method not allowed' }, { status: 405, headers: corsHeaders });
       } catch (err: any) { return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders }); }
+    }
+    const participantSettingsMatch = pathname.match(/^\/api\/races\/([^/]+)\/participant-settings$/);
+    if (participantSettingsMatch && request.method === 'PUT') {
+      try {
+        await ensureParticipantSettings(env.DB);
+        const raceId = participantSettingsMatch[1], body: any = await request.json();
+        if (typeof body?.allow_duplicate_emails !== 'boolean') return Response.json({ success: false, error: 'allow_duplicate_emails must be true or false' }, { status: 400, headers: corsHeaders });
+        if (!await env.DB.prepare('SELECT id FROM Races WHERE id = ?').bind(raceId).first()) return Response.json({ success: false, error: 'Event not found' }, { status: 404, headers: corsHeaders });
+        if (body.allow_duplicate_emails && await hasLegacyEmailConstraint(env.DB)) return Response.json({ success: false, error: 'Apply migration 0005_shared_participant_emails.sql before enabling shared emails.' }, { status: 503, headers: corsHeaders });
+        if (!body.allow_duplicate_emails && await env.DB.prepare('SELECT 1 FROM Runners WHERE race_id = ? GROUP BY LOWER(TRIM(email)) HAVING COUNT(*) > 1 LIMIT 1').bind(raceId).first()) return Response.json({ success: false, error: DISABLE_SHARED_ERROR }, { status: 409, headers: corsHeaders });
+        await env.DB.prepare('INSERT INTO EventParticipantSettings(race_id, allow_duplicate_emails) VALUES (?,?) ON CONFLICT(race_id) DO UPDATE SET allow_duplicate_emails = excluded.allow_duplicate_emails').bind(raceId, body.allow_duplicate_emails ? 1 : 0).run();
+        return Response.json({ success: true, data: { race_id: raceId, allow_duplicate_emails: body.allow_duplicate_emails } }, { headers: corsHeaders });
+      } catch (err: any) { return Response.json({ success: false, error: err.message }, { status: String(err.message).includes('Cannot disable shared emails') ? 409 : 500, headers: corsHeaders }); }
     }
     const eventEmailMatch = pathname.match(/^\/api\/races\/([^/]+)\/email-template$/);
     if (eventEmailMatch && request.method === 'PUT') {
@@ -678,11 +693,12 @@ export default {
       try {
         await ensureD1Bootstrap(env);
         const query = `
-          SELECT r.*, t.name as template_name, ee.email_template_id, et.name AS email_template_name,
+          SELECT r.*, t.name as template_name, ee.email_template_id, et.name AS email_template_name, COALESCE(eps.allow_duplicate_emails,0) AS allow_duplicate_emails,
             (SELECT COUNT(*) FROM Runners WHERE race_id = r.id) as runner_count,
             (SELECT COUNT(*) FROM Runners ru JOIN Passes p ON ru.id = p.runner_id WHERE ru.race_id = r.id AND p.status = 'issued') as issued_count
           FROM Races r
           LEFT JOIN Templates t ON r.template_id = t.id
+          LEFT JOIN EventParticipantSettings eps ON eps.race_id = r.id
           LEFT JOIN EventEmailTemplates ee ON ee.race_id = r.id
           LEFT JOIN EmailTemplates et ON et.id = ee.email_template_id
           ORDER BY r.created_at DESC
@@ -698,7 +714,8 @@ export default {
       const raceId = pathname.replace('/api/races/', '');
       try {
         await ensureEmailTemplateSchema(env.DB);
-        const race = await env.DB.prepare('SELECT r.*, ee.email_template_id FROM Races r LEFT JOIN EventEmailTemplates ee ON ee.race_id = r.id WHERE r.id = ?').bind(raceId).first<any>();
+        await ensureParticipantSettings(env.DB);
+        const race = await env.DB.prepare('SELECT r.*, ee.email_template_id, COALESCE(eps.allow_duplicate_emails,0) AS allow_duplicate_emails FROM Races r LEFT JOIN EventEmailTemplates ee ON ee.race_id = r.id LEFT JOIN EventParticipantSettings eps ON eps.race_id = r.id WHERE r.id = ?').bind(raceId).first<any>();
         if (!race) return Response.json({ success: false, error: 'Race not found' }, { status: 404, headers: corsHeaders });
         return Response.json({ success: true, data: race }, { headers: corsHeaders });
       } catch (err: any) {
@@ -710,10 +727,13 @@ export default {
       try {
         const confirmedOrgId = await ensureD1Bootstrap(env);
         const body: any = await request.json();
-        const { name, template_id, event_date, location, field_mapping, org_id, email_template_id } = body;
+        const { name, template_id, event_date, location, field_mapping, org_id, email_template_id, allow_duplicate_emails } = body;
         if (!name || !template_id) {
           return Response.json({ success: false, error: 'Name and template_id are required' }, { status: 400, headers: corsHeaders });
         }
+
+        if (allow_duplicate_emails !== undefined && typeof allow_duplicate_emails !== 'boolean') return Response.json({ success: false, error: 'allow_duplicate_emails must be true or false' }, { status: 400, headers: corsHeaders });
+        if (allow_duplicate_emails && await hasLegacyEmailConstraint(env.DB)) return Response.json({ success: false, error: 'Apply migration 0005_shared_participant_emails.sql before enabling shared emails.' }, { status: 503, headers: corsHeaders });
 
         if (!await selectedTemplateExists(env.DB, email_template_id)) return Response.json({ success: false, error: 'Email template not found' }, { status: 400, headers: corsHeaders });
 
@@ -750,10 +770,11 @@ export default {
           mappingStr
         );
         const statements = [insertRace];
+        statements.push(env.DB.prepare('INSERT INTO EventParticipantSettings(race_id,allow_duplicate_emails) VALUES (?,?)').bind(raceId, allow_duplicate_emails ? 1 : 0));
         if (email_template_id) statements.push(env.DB.prepare('INSERT INTO EventEmailTemplates (race_id, email_template_id) VALUES (?, ?)').bind(raceId, email_template_id));
         await env.DB.batch(statements);
 
-        const created = await env.DB.prepare('SELECT r.*, ee.email_template_id FROM Races r LEFT JOIN EventEmailTemplates ee ON ee.race_id = r.id WHERE r.id = ?').bind(raceId).first<any>();
+        const created = await env.DB.prepare('SELECT r.*, ee.email_template_id, COALESCE(eps.allow_duplicate_emails,0) AS allow_duplicate_emails FROM Races r LEFT JOIN EventEmailTemplates ee ON ee.race_id = r.id LEFT JOIN EventParticipantSettings eps ON eps.race_id = r.id WHERE r.id = ?').bind(raceId).first<any>();
         return Response.json({ success: true, data: created }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
@@ -814,23 +835,26 @@ export default {
       try {
         await ensureD1Bootstrap(env);
         const body: any = await request.json();
-        const { race_id, email, first_name, last_name, dynamic_data, issue_immediate } = body;
-        if (!race_id || !email || !first_name || !last_name) {
+        const { race_id, email: rawEmail, first_name, last_name, dynamic_data, issue_immediate } = body;
+        if (!race_id || !rawEmail || !first_name || !last_name) {
           return Response.json({ success: false, error: 'race_id, email, first_name, last_name required' }, { status: 400, headers: corsHeaders });
         }
+
+        let email: string;
+        try { email = participantEmail(rawEmail); } catch (err: any) { return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders }); }
+        if (!await env.DB.prepare('SELECT id FROM Races WHERE id = ?').bind(race_id).first()) return Response.json({ success: false, error: 'Event not found' }, { status: 404, headers: corsHeaders });
+        if (!await allowsSharedEmail(env.DB, race_id) && await env.DB.prepare('SELECT id FROM Runners WHERE race_id = ? AND LOWER(TRIM(email)) = ? LIMIT 1').bind(race_id, email).first()) return Response.json({ success: false, error: DUPLICATE_EMAIL_ERROR }, { status: 409, headers: corsHeaders });
 
         const runnerId = `run-${crypto.randomUUID()}`;
         const passId = `pass-${runnerId}`;
         const dynStr = typeof dynamic_data === 'string' ? dynamic_data : JSON.stringify(dynamic_data || {});
         let passStatus = 'pending';
 
-        await env.DB.prepare(`
-          INSERT INTO Runners (id, race_id, email, first_name, last_name, dynamic_data)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).bind(runnerId, race_id, email, first_name, last_name, dynStr).run();
-
-        await env.DB.prepare(`INSERT INTO Passes (id, runner_id, status) VALUES (?, ?, 'pending')`)
-          .bind(passId, runnerId).run();
+        await env.DB.batch([
+          env.DB.prepare('INSERT INTO Runners (id, race_id, email, first_name, last_name, dynamic_data) VALUES (?,?,?,?,?,?)')
+            .bind(runnerId, race_id, email, first_name, last_name, dynStr),
+          env.DB.prepare("INSERT INTO Passes (id, runner_id, status) VALUES (?,?,'pending')").bind(passId, runnerId),
+        ]);
 
         // Retrieve Race, Template, and Organization
         const raceDetails = await env.DB.prepare(`
@@ -912,7 +936,7 @@ export default {
           },
         }, { headers: corsHeaders });
       } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+        return Response.json({ success: false, error: String(err.message).includes('Duplicate email') ? DUPLICATE_EMAIL_ERROR : err.message }, { status: String(err.message).includes('Duplicate email') ? 409 : 500, headers: corsHeaders });
       }
     }
 
@@ -1024,9 +1048,12 @@ export default {
     if (pathname === '/api/runner/update' && request.method === 'PUT') {
       try {
         const body: any = await request.json();
-        const { runner_id, first_name, last_name, email, dynamic_data } = body;
+        const { runner_id, first_name, last_name, email: rawEmail, dynamic_data } = body;
         if (!runner_id) return Response.json({ success: false, error: 'runner_id required' }, { status: 400, headers: corsHeaders });
 
+        await ensureParticipantSettings(env.DB);
+        let email: string | undefined;
+        try { email = rawEmail === undefined ? undefined : participantEmail(rawEmail); } catch (err: any) { return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders }); }
         const dynamicStr = dynamic_data === undefined ? null : typeof dynamic_data === 'string' ? dynamic_data : JSON.stringify(dynamic_data || {});
         await env.DB.prepare(`
           UPDATE Runners 
@@ -1071,7 +1098,7 @@ export default {
           plan_note: providerUpdated ? 'D1 and WalletWallet updated.' : 'D1 updated; no issued provider pass was available to update.',
         }, { headers: corsHeaders });
       } catch (err: any) {
-        return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+        return Response.json({ success: false, error: String(err.message).includes('Duplicate email') ? DUPLICATE_EMAIL_ERROR : err.message }, { status: String(err.message).includes('Duplicate email') ? 409 : 500, headers: corsHeaders });
       }
     }
 
@@ -1148,7 +1175,9 @@ export default {
         const { email } = body;
         if (!email) return Response.json({ success: false, error: 'Email required' }, { status: 400, headers: corsHeaders });
 
-        const runner = await env.DB.prepare('SELECT * FROM Runners WHERE LOWER(email) = LOWER(?) LIMIT 1').bind(email).first<any>();
+        const matches = await env.DB.prepare('SELECT * FROM Runners WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) LIMIT 2').bind(email).all<any>();
+        if (matches.results.length > 1) return Response.json({ success: false, error: 'Multiple participants use this email. Select the athlete in the event roster and resend their invitation.' }, { status: 409, headers: corsHeaders });
+        const runner = matches.results[0];
         if (!runner) return Response.json({ success: false, error: 'Registration not found' }, { status: 404, headers: corsHeaders });
 
         const race = await env.DB.prepare('SELECT name FROM Races WHERE id = ?').bind(runner.race_id).first<any>();

@@ -48,8 +48,7 @@ CREATE TABLE IF NOT EXISTS Runners (
     last_name TEXT NOT NULL,
     dynamic_data TEXT, -- JSON blob (e.g. {"bib": "1042", "category": "42K", "wave": "A"})
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (race_id) REFERENCES Races(id) ON DELETE CASCADE,
-    UNIQUE(race_id, email)
+    FOREIGN KEY (race_id) REFERENCES Races(id) ON DELETE CASCADE
 );
 
 -- 5. Wallet Passes
@@ -117,3 +116,27 @@ CREATE TABLE IF NOT EXISTS EmailTemplateDesigns (
   design_json TEXT NOT NULL,
   FOREIGN KEY (email_template_id) REFERENCES EmailTemplates(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS EventParticipantSettings (
+  race_id TEXT PRIMARY KEY,
+  allow_duplicate_emails INTEGER NOT NULL DEFAULT 0 CHECK(allow_duplicate_emails IN (0,1)),
+  FOREIGN KEY (race_id) REFERENCES Races(id) ON DELETE CASCADE
+);
+
+CREATE TRIGGER IF NOT EXISTS runners_email_insert BEFORE INSERT ON Runners
+    WHEN COALESCE((SELECT allow_duplicate_emails FROM EventParticipantSettings WHERE race_id = NEW.race_id),0) = 0
+      AND EXISTS(SELECT 1 FROM Runners WHERE race_id = NEW.race_id AND LOWER(TRIM(email)) = LOWER(TRIM(NEW.email)) AND id <> NEW.id)
+    BEGIN SELECT RAISE(ABORT, 'Duplicate email is not allowed for this event'); END;
+
+CREATE TRIGGER IF NOT EXISTS runners_email_update BEFORE UPDATE OF race_id,email ON Runners
+    WHEN COALESCE((SELECT allow_duplicate_emails FROM EventParticipantSettings WHERE race_id = NEW.race_id),0) = 0
+      AND EXISTS(SELECT 1 FROM Runners WHERE race_id = NEW.race_id AND LOWER(TRIM(email)) = LOWER(TRIM(NEW.email)) AND id <> NEW.id)
+    BEGIN SELECT RAISE(ABORT, 'Duplicate email is not allowed for this event'); END;
+
+CREATE TRIGGER IF NOT EXISTS event_email_insert BEFORE INSERT ON EventParticipantSettings
+    WHEN NEW.allow_duplicate_emails = 0 AND EXISTS(SELECT 1 FROM Runners WHERE race_id = NEW.race_id GROUP BY LOWER(TRIM(email)) HAVING COUNT(*) > 1)
+    BEGIN SELECT RAISE(ABORT, 'Cannot disable shared emails while duplicates exist'); END;
+
+CREATE TRIGGER IF NOT EXISTS event_email_update BEFORE UPDATE OF allow_duplicate_emails ON EventParticipantSettings
+    WHEN NEW.allow_duplicate_emails = 0 AND EXISTS(SELECT 1 FROM Runners WHERE race_id = NEW.race_id GROUP BY LOWER(TRIM(email)) HAVING COUNT(*) > 1)
+    BEGIN SELECT RAISE(ABORT, 'Cannot disable shared emails while duplicates exist'); END;
