@@ -33,7 +33,8 @@ binding = "PASS_QUEUE"
 
 [[queues.consumers]]
 queue = "pass-issuance-queue"
-max_batch_size = 2
+max_batch_size = 1
+max_concurrency = 1
 max_batch_timeout = 5
 max_retries = 3
 retry_delay = 30

@@ -58,7 +58,10 @@ async function retainProviderPackage(env: Env, runnerId: string, result: any): P
   await env.DB.prepare(`UPDATE Passes SET walletwallet_pass_id = ?, google_save_url = ?,
     share_url = ?, apple_pass_base64 = ?, r2_key = NULL, updated_at = CURRENT_TIMESTAMP WHERE runner_id = ?`)
     .bind(result.serialNumber, result.googleSaveUrl || null, result.shareUrl || null, result.applePass, runnerId).run();
-  return storeApplePass(env, runnerId, result.applePass);
+  console.info('Pass storage stage', { runner_id: runnerId, stage: 'provider_package_retained' });
+  const key = await storeApplePass(env, runnerId, result.applePass);
+  await env.DB.prepare('UPDATE Passes SET r2_key = ? WHERE runner_id = ?').bind(key, runnerId).run();
+  return key;
 }
 
 // Call WalletWallet API (https://www.walletwallet.dev/docs)
@@ -1556,7 +1559,13 @@ export default {
   async queue(batch: MessageBatch<any>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       const jobId = message.body.import_job_id;
+      let stage = 'load_job';
+      const progress = (next: string) => {
+        stage = next;
+        console.info('Pass import stage', { job_id: jobId || null, runner_id: message.body.runner_id, delivery_attempt: message.attempts, stage });
+      };
       try {
+        progress('load_job');
         if (jobId) {
           const job = await env.DB.prepare('SELECT state FROM ImportJobs WHERE id = ?').bind(jobId).first<any>();
           if (!job || ['completed', 'cancelled'].includes(job.state)) { message.ack(); continue; }
@@ -1564,6 +1573,7 @@ export default {
             .bind(jobId).run();
         }
         const { runner_id, payload } = message.body;
+        progress('load_participant');
         const runner = await env.DB.prepare('SELECT * FROM Runners WHERE id = ?').bind(runner_id).first<any>();
         const pass = await env.DB.prepare('SELECT * FROM Passes WHERE runner_id = ?').bind(runner_id).first<any>();
         if (!runner || !pass || pass.status === 'revoked') {
@@ -1574,8 +1584,10 @@ export default {
           const race = await env.DB.prepare('SELECT * FROM Races WHERE id = ?').bind(runner.race_id).first<any>();
           const template = race ? await env.DB.prepare('SELECT * FROM Templates WHERE id = ?').bind(race.template_id).first<any>() : null;
           if (pass.apple_pass_base64) {
+            progress('restore_saved_package');
             await ensureStoredPass(env, pass);
           } else {
+            progress('create_provider_pass');
             const result = await createWalletWalletPass({
               env,
               apiKey: env.WALLETWALLET_API_KEY || (await getSystemSetting(env, 'walletwalletApiKey')) || '',
@@ -1585,19 +1597,20 @@ export default {
           raceName: race?.name || 'Athletic Event', runner, template,
             });
             if (!result.success) throw new Error(result.error || 'Pass issuance failed');
-            await env.DB.prepare(`UPDATE Passes SET walletwallet_pass_id = ?, google_save_url = ?,
-              share_url = ?, apple_pass_base64 = ?, r2_key = ? WHERE runner_id = ?`)
-              .bind(result.serialNumber, result.googleSaveUrl || null, result.shareUrl || null,
-                result.applePass, result.r2Key, runner_id).run();
+            // createWalletWalletPass already retained the response and persisted the R2 key.
+            // Do not serialize/write the potentially large package to D1 a second time.
           }
+          progress('mark_pass_issued');
           await env.DB.prepare("UPDATE Passes SET status = 'issued', updated_at = CURRENT_TIMESTAMP WHERE runner_id = ?")
             .bind(runner_id).run();
         }
         if (jobId || payload?.email) {
+          progress('send_invitation');
           const emailResult = await sendPassEmail({ env, to: runner.email,
             firstName: runner.first_name || 'Participant', runnerId: runner_id });
           if (!emailResult.success) throw new Error(emailResult.error || 'Pass email delivery failed');
         }
+        progress('mark_job_completed');
         if (jobId) await env.DB.prepare("UPDATE ImportJobs SET state = 'completed', last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(jobId).run();
 
         message.ack();
@@ -1605,10 +1618,10 @@ export default {
         if (jobId) {
           try {
             await env.DB.prepare("UPDATE ImportJobs SET state = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-              .bind((message.attempts || 1) >= 4 ? 'failed' : 'retrying', String(err.message || 'Pass processing failed').slice(0, 500), jobId).run();
+              .bind((message.attempts || 1) >= 4 ? 'failed' : 'retrying', `${stage}: ${String(err.message || 'Pass processing failed')}`.slice(0, 500), jobId).run();
           } catch { /* Keep retrying even if recording the error failed. */ }
         }
-        console.error('Pass queue processing failed:', err.message || 'Unknown error');
+        console.error('Pass queue processing failed:', { job_id: jobId, runner_id: message.body.runner_id, stage, error: err.message || 'Unknown error' });
         message.retry();
       }
     }

@@ -194,6 +194,30 @@ test('queued storage failure retains original provider output; retry does not cr
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test('recovering a tracked interrupted job reuses its large saved package and skips sequential duplicate delivery', async () => {
+  const f = fixture(), originalFetch = globalThis.fetch;
+  const bytes = new Uint8Array(512 * 1024).fill(219); bytes.set([80,75,3,4]);
+  f.sqlite.prepare("UPDATE Passes SET status = 'pending', walletwallet_pass_id = 'ww-existing', apple_pass_base64 = ?, r2_key = NULL").run(Buffer.from(bytes).toString('base64'));
+  f.sqlite.exec("INSERT INTO ImportJobs(id,batch_id,runner_id,state,attempts) VALUES ('interrupted','batch','runner','queued',0)");
+  let emails = 0, acks = 0;
+  globalThis.fetch = async (url) => {
+    assert.equal(String(url), 'https://api.resend.com/emails', 'Recovery must not create another provider pass');
+    emails++; return Response.json({ id: 'recovered-email' });
+  };
+  const message = { body: { import_job_id: 'interrupted', runner_id: 'runner' }, attempts: 1,
+    ack() { acks++; }, retry() { assert.fail('Saved package recovery should succeed'); } };
+  try {
+    await worker.queue({ messages: [message] } as any, f.env);
+    await worker.queue({ messages: [message] } as any, f.env);
+    assert.equal(emails, 1); assert.equal(acks, 2);
+    const pass = f.sqlite.prepare('SELECT * FROM Passes').get()!;
+    assert.equal(pass.walletwallet_pass_id, 'ww-existing'); assert.equal(pass.status, 'issued');
+    assert.deepEqual(f.objects.get(String(pass.r2_key)), bytes);
+    const job = f.sqlite.prepare('SELECT * FROM ImportJobs').get()!;
+    assert.equal(job.state, 'completed'); assert.equal(job.attempts, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test('email-only lookup never returns bearer token or provider URLs', async () => {
   const f = fixture(), originalFetch = globalThis.fetch;
   f.sqlite.prepare('UPDATE Passes SET apple_pass_base64 = ?').run(signedBase64);
@@ -374,7 +398,7 @@ test('queue consumer records provider errors and terminal failure instead of sil
     const message = { ...messages[0], attempts: 1, ack() { assert.fail('Must not acknowledge failed issuance'); }, retry() { retries++; } };
     await worker.queue({ messages: [message] } as any, f.env);
     assert.equal(f.sqlite.prepare('SELECT state FROM ImportJobs').get()!.state, 'retrying');
-    assert.equal(f.sqlite.prepare('SELECT last_error FROM ImportJobs').get()!.last_error, 'Monthly pass limit exceeded');
+    assert.equal(f.sqlite.prepare('SELECT last_error FROM ImportJobs').get()!.last_error, 'create_provider_pass: Monthly pass limit exceeded');
     await worker.queue({ messages: [{ ...message, attempts: 4 }] } as any, f.env);
     assert.equal(f.sqlite.prepare('SELECT state FROM ImportJobs').get()!.state, 'failed'); assert.equal(retries, 2);
   } finally { globalThis.fetch = originalFetch; }

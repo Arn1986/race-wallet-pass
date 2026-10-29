@@ -39,15 +39,30 @@ export async function resolvePassLink(env: Env, token: string): Promise<any | nu
 }
 
 // Never use the public graphics bucket for signed participant packages.
+export function decodeApplePackage(base64: string): Uint8Array {
+  const nativeDecode = (Uint8Array as typeof Uint8Array & { fromBase64?: (value: string) => Uint8Array }).fromBase64;
+  let bytes: Uint8Array;
+  if (nativeDecode) bytes = nativeDecode.call(Uint8Array, base64);
+  else {
+    const binary = atob(base64);
+    bytes = new Uint8Array(binary.length);
+    // Avoid Array.from's iterator/callback/allocation cost for every package byte.
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  }
+  if (bytes[0] !== 80 || bytes[1] !== 75 || bytes[2] !== 3 || bytes[3] !== 4) throw new Error('Wallet provider returned an invalid pkpass package');
+  return bytes;
+}
+
 export async function storeApplePass(env: Env, runnerId: string, base64: string): Promise<string> {
   if (!env.PASSES_BUCKET) throw new Error('Private PASSES_BUCKET binding is required');
-  const binary = atob(base64);
-  if (!binary.startsWith('PK\u0003\u0004')) throw new Error('Wallet provider returned an invalid pkpass package');
-  const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+  console.info('Pass storage stage', { runner_id: runnerId, stage: 'decode_start', base64_characters: base64.length });
+  const bytes = decodeApplePackage(base64);
   const key = `passes/${runnerId}/pass.pkpass`;
+  console.info('Pass storage stage', { runner_id: runnerId, stage: 'r2_put_start', bytes: bytes.byteLength });
   await env.PASSES_BUCKET.put(key, bytes, {
     httpMetadata: { contentType: 'application/vnd.apple.pkpass', cacheControl: 'private, no-store' },
   });
+  console.info('Pass storage stage', { runner_id: runnerId, stage: 'r2_put_complete' });
   return key;
 }
 
