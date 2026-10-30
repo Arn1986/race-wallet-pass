@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs';
 import rawWorker, { type Env } from '../worker/index.ts';
 import { accessConfig, accessToken } from './accessFixture.ts';
 import { EMAIL_THEMES } from '../server/emailDesign.ts';
-import { createPassLink, deliverPass, deviceWallet, storeApplePass } from '../worker/passDelivery.ts';
+import { createPassLink, deliverPass, deviceWallet, storeApplePass, resolvePassLink } from '../worker/passDelivery.ts';
+import { NO_LOOKUP_MATCH } from '../server/publicLookup.ts';
 
 // Existing behavior tests run through the production gate with a genuinely signed JWT.
 const worker = {
@@ -65,6 +66,12 @@ function fixture() {
 const signedBytes = new Uint8Array([80, 75, 3, 4, 7, 11, 0, 255]);
 const signedBase64 = Buffer.from(signedBytes).toString('base64');
 const context = { waitUntil() {}, passThroughOnException() {} };
+
+function lookupPost(slug = 'race-lookup', fields = { first_name: 'First', last_name: 'Last', email: 'runner@example.com' }, extraHeaders = {}) {
+  return new Request(`https://walletpass.3fstriders.org/${slug}`, { method: 'POST',
+    headers: { Origin: 'https://walletpass.3fstriders.org', 'CF-Connecting-IP': '203.0.113.1', ...extraHeaders },
+    body: new URLSearchParams(fields) });
+}
 
 test('device detection covers mobile, iPad desktop UA, desktop and unknown', () => {
   for (const ua of ['iPhone', 'iPad', 'Mozilla Macintosh Safari Mobile']) assert.equal(deviceWallet(ua), 'apple');
@@ -707,4 +714,128 @@ test('CSV shared emails get separate queued passes, private links and personaliz
     assert.equal(again.status, 202);
     assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM Runners WHERE email = 'family@example.com'").get()!.n, 4);
   } finally { globalThis.fetch = previousFetch; }
+});
+
+test('public lookup settings require Access, reserve unique slugs, and publish only enabled event pages', async () => {
+  const f = fixture();
+  f.sqlite.exec('DROP TABLE PublicLookupPages; DROP TABLE PublicLookupAttempts');
+  const settings = (method = 'GET', body?: any, id = 'race') => new Request(`https://example.com/api/races/${id}/lookup-page`, { method, ...(body ? { body: JSON.stringify(body) } : {}) });
+  assert.equal((await rawWorker.fetch(settings(), f.env, context)).status, 403);
+  const initial = await worker.fetch(settings(), f.env, context);
+  assert.deepEqual((await initial.json() as any).data, { slug: '', enabled: false, public_url: null });
+  assert.equal((await rawWorker.fetch(new Request('https://walletpass.3fstriders.org/race-lookup'), f.env, context)).status, 404);
+  for (const slug of ['api', 'lookup', 'pass', 'assets', 'cdn-cgi', 'a'.repeat(43), '../api/settings', 'bad/path', 'xy']) {
+    assert.equal((await worker.fetch(settings('PUT', { slug, enabled: true }), f.env, context)).status, 400);
+  }
+  const saved = await worker.fetch(settings('PUT', { slug: ' RACE-LOOKUP ', enabled: true }), f.env, context);
+  assert.equal(saved.status, 200);
+  assert.deepEqual((await saved.json() as any).data, { slug: 'race-lookup', enabled: true, public_url: 'https://walletpass.3fstriders.org/race-lookup' });
+  const page = await rawWorker.fetch(new Request('https://walletpass.3fstriders.org/race-lookup'), f.env, context);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.ok(html.includes('Race &lt;script&gt;')); assert.ok(!html.includes('runner@example.com'));
+  assert.ok(html.includes('method="post"')); assert.ok(html.includes('name="first_name"'));
+  assert.equal(page.headers.get('Cache-Control'), 'private, no-store');
+  assert.equal(page.headers.get('Referrer-Policy'), 'no-referrer');
+  assert.match(page.headers.get('Content-Security-Policy')!, /frame-ancestors 'none'/);
+  assert.equal(await (await rawWorker.fetch(new Request('https://walletpass.3fstriders.org/race-lookup', { method: 'HEAD' }), f.env, context)).text(), '');
+  f.sqlite.exec("INSERT INTO Races(id,org_id,template_id,name,field_mapping) VALUES ('other','org','tpl','Other','{}')");
+  assert.equal((await worker.fetch(settings('PUT', { slug: 'race-lookup', enabled: true }, 'other'), f.env, context)).status, 409);
+  assert.equal((await worker.fetch(settings('PUT', { slug: 'other-lookup', enabled: true }, 'missing'), f.env, context)).status, 404);
+  for (const path of ['/', '/api/runners', '/api/races/race/lookup-page', '/assets/main.js']) assert.equal((await rawWorker.fetch(new Request(`https://walletpass.3fstriders.org${path}`), f.env, context)).status, 404);
+  await worker.fetch(settings('PUT', { slug: 'race-lookup', enabled: false }), f.env, context);
+  assert.equal((await rawWorker.fetch(lookupPost(), f.env, context)).status, 404);
+});
+
+test('exact public name/email match redirects to a secure token and streams the original Apple package', async () => {
+  const f = fixture(), previousFetch = globalThis.fetch;
+  f.sqlite.exec("INSERT INTO PublicLookupPages(race_id,slug,enabled) VALUES ('race','race-lookup',1)");
+  const key = await storeApplePass(f.env, 'runner', signedBase64);
+  f.sqlite.prepare('UPDATE Passes SET r2_key = ?').run(key);
+  globalThis.fetch = async () => { assert.fail('Public lookup must not call Resend or WalletWallet'); };
+  try {
+    const response = await rawWorker.fetch(lookupPost('race-lookup', { first_name: '  FIRST  ', last_name: ' LAST ', email: ' RUNNER@EXAMPLE.COM ' }), f.env, context);
+    assert.equal(response.status, 303);
+    const location = response.headers.get('Location')!;
+    assert.match(location, /^\/[A-Za-z0-9_-]{43}$/);
+    assert.equal((await resolvePassLink(f.env, location.slice(1))).runner_id, 'runner');
+    const nativeForm = await rawWorker.fetch(lookupPost('race-lookup', undefined, { Origin: 'null', 'Sec-Fetch-Site': 'same-origin' }), f.env, context);
+    assert.equal(nativeForm.status, 303, 'Native form submissions with no-referrer must work');
+    const apple = await rawWorker.fetch(new Request(`https://walletpass.3fstriders.org${location}`, { headers: { 'User-Agent': 'iPhone' } }), f.env, context);
+    assert.equal(apple.status, 200); assert.deepEqual(new Uint8Array(await apple.arrayBuffer()), signedBytes);
+    f.sqlite.exec('UPDATE PublicLookupPages SET enabled = 0');
+    assert.equal((await rawWorker.fetch(lookupPost(), f.env, context)).status, 404);
+    assert.equal((await rawWorker.fetch(new Request(`https://walletpass.3fstriders.org${location}`, { headers: { 'User-Agent': 'Android' } }), f.env, context)).status, 302);
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test('lookup does not expose pending, revoked, wrong-name, wrong-email or other-event registrations', async () => {
+  const f = fixture();
+  f.sqlite.exec("INSERT INTO PublicLookupPages(race_id,slug,enabled) VALUES ('race','race-lookup',1)");
+  const bodies: string[] = [];
+  for (const fields of [
+    { first_name: 'Wrong', last_name: 'Last', email: 'runner@example.com' },
+    { first_name: 'First', last_name: 'Last', email: 'other@example.com' },
+    { first_name: 'Fir', last_name: 'Last', email: 'runner@example.com' },
+  ]) {
+    const res = await rawWorker.fetch(lookupPost('race-lookup', fields), f.env, context);
+    assert.equal(res.status, 200); assert.equal(res.headers.get('Location'), null); bodies.push(await res.text());
+  }
+  for (const status of ['pending', 'revoked', 'failed']) {
+    f.sqlite.prepare('UPDATE Passes SET status = ?').run(status);
+    const res = await rawWorker.fetch(lookupPost(), f.env, context); bodies.push(await res.text());
+  }
+  assert.ok(bodies.every(body => body === bodies[0] && body.includes(NO_LOOKUP_MATCH)));
+  f.sqlite.exec("INSERT INTO Races(id,org_id,template_id,name,field_mapping) VALUES ('other','org','tpl','Other','{}'); INSERT INTO PublicLookupPages(race_id,slug,enabled) VALUES ('other','other-lookup',1)");
+  const other = await rawWorker.fetch(lookupPost('other-lookup'), f.env, context);
+  assert.equal(other.status, 200); assert.ok((await other.text()).includes(NO_LOOKUP_MATCH));
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM PassLinks').get()!.n, 0);
+});
+
+test('shared-inbox lookup selects exact names, normalizes Unicode/spacing, and refuses ambiguous identical names', async () => {
+  const f = fixture();
+  f.sqlite.exec(`INSERT INTO PublicLookupPages(race_id,slug,enabled) VALUES ('race','race-lookup',1);
+    INSERT INTO EventParticipantSettings(race_id,allow_duplicate_emails) VALUES ('race',1);
+    INSERT INTO Runners(id,race_id,email,first_name,last_name) VALUES ('second','race','runner@example.com','Élodie  Anne','Rivera');
+    INSERT INTO Passes(id,runner_id,status,apple_pass_base64) VALUES ('second-pass','second','issued','${signedBase64}');`);
+  const request = () => lookupPost('race-lookup', { first_name: 'ÉLODIE ANNE', last_name: ' rivera ', email: 'runner@example.com' });
+  const res = await rawWorker.fetch(request(), f.env, context);
+  assert.equal(res.status, 303);
+  assert.equal((await resolvePassLink(f.env, res.headers.get('Location')!.slice(1))).runner_id, 'second');
+  f.sqlite.exec("UPDATE Runners SET first_name = 'Élodie Anne', last_name = 'Rivera' WHERE id = 'runner'");
+  const ambiguous = await rawWorker.fetch(request(), f.env, context);
+  assert.equal(ambiguous.status, 200); assert.ok((await ambiguous.text()).includes(NO_LOOKUP_MATCH));
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM PassLinks').get()!.n, 1);
+});
+
+test('lookup rate limits submissions atomically by event/IP and cleans expired buckets', async () => {
+  const f = fixture(), originalNow = Date.now;
+  Date.now = () => 1_800_000_000_000;
+  f.sqlite.exec("INSERT INTO PublicLookupPages(race_id,slug,enabled) VALUES ('race','race-lookup',1); INSERT INTO PublicLookupAttempts(key,expires_at) VALUES ('expired',0)");
+  try {
+    for (let i = 0; i < 10; i++) assert.equal((await rawWorker.fetch(lookupPost('race-lookup', { first_name: 'Wrong', last_name: 'Wrong', email: 'no@example.com' }), f.env, context)).status, 200);
+    const limited = await rawWorker.fetch(lookupPost(), f.env, context);
+    assert.equal(limited.status, 429); assert.equal(limited.headers.get('Retry-After'), '600');
+    assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM PublicLookupAttempts WHERE key = 'expired'").get()!.n, 0);
+    assert.equal((await rawWorker.fetch(lookupPost('race-lookup', { first_name: 'Wrong', last_name: 'Wrong', email: 'no@example.com' }, { 'CF-Connecting-IP': '203.0.113.2' }), f.env, context)).status, 200);
+    Date.now = () => 1_800_000_600_000;
+    assert.equal((await rawWorker.fetch(lookupPost('race-lookup', { first_name: 'Wrong', last_name: 'Wrong', email: 'no@example.com' }), f.env, context)).status, 200);
+  } finally { Date.now = originalNow; }
+});
+
+test('lookup refuses cross-origin, malformed and oversized submissions; missing packages never mint tokens', async () => {
+  const f = fixture();
+  f.sqlite.exec("INSERT INTO PublicLookupPages(race_id,slug,enabled) VALUES ('race','race-lookup',1)");
+  assert.equal((await rawWorker.fetch(lookupPost('race-lookup', undefined, { Origin: 'https://attacker.example' }), f.env, context)).status, 403);
+  assert.equal((await rawWorker.fetch(lookupPost('race-lookup', undefined, { Origin: 'null', 'Sec-Fetch-Site': 'cross-site' }), f.env, context)).status, 403);
+  assert.equal((await rawWorker.fetch(lookupPost('race-lookup', undefined, { Origin: 'null' }), f.env, context)).status, 403);
+  const json = new Request('https://walletpass.3fstriders.org/race-lookup', { method: 'POST', headers: { Origin: 'https://walletpass.3fstriders.org', 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal((await rawWorker.fetch(json, f.env, context)).status, 400);
+  assert.equal((await rawWorker.fetch(lookupPost('race-lookup', { first_name: 'a'.repeat(9000), last_name: 'Last', email: 'runner@example.com' }), f.env, context)).status, 400);
+  const unavailable = await rawWorker.fetch(lookupPost(), f.env, context);
+  assert.equal(unavailable.status, 503);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM PassLinks').get()!.n, 0);
+  f.sqlite.exec("DELETE FROM Races WHERE id = 'race'");
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM PublicLookupPages').get()!.n, 0);
+  assert.equal((await rawWorker.fetch(new Request('https://walletpass.3fstriders.org/race-lookup'), f.env, context)).status, 404);
 });

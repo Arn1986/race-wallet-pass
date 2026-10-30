@@ -1,3 +1,4 @@
+import { validateLookupSettings, lookupSlugFromPath, lookupHeaders, renderLookupPage, type LookupPageSettings } from './server/publicLookup.ts';
 import { participantEmail } from './server/participantEmails.ts';
 import { validateEmailTemplate, renderPassEmail, type EmailTemplate } from './server/emailTemplates.ts';
 import { buildWalletWalletPayload, validateTemplateSchema } from './server/walletPayload.ts';
@@ -578,6 +579,33 @@ app.post('/api/races', (req, res) => {
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message });
   }
+});
+
+// The Express server mirrors organizer settings in memory; secure public delivery runs in the Worker.
+const localLookupPages = new Map<string, LookupPageSettings>();
+app.get('/api/races/:id/lookup-page', (req, res) => {
+  if (!d1Db.getRaceById(req.params.id)) return res.status(404).json({ success: false, error: 'Event not found' });
+  const page = localLookupPages.get(req.params.id);
+  return res.json({ success: true, data: { slug: page?.slug || '', enabled: page?.enabled || false,
+    public_url: page ? `${req.protocol}://${req.get('host')}/${page.slug}` : null } });
+});
+app.put('/api/races/:id/lookup-page', (req, res) => {
+  if (!d1Db.getRaceById(req.params.id)) return res.status(404).json({ success: false, error: 'Event not found' });
+  try {
+    const page = validateLookupSettings(req.body);
+    if ([...localLookupPages.entries()].some(([id, other]) => id !== req.params.id && other.slug === page.slug)) return res.status(409).json({ success: false, error: 'That URL slug is already assigned to another event.' });
+    localLookupPages.set(req.params.id, page);
+    return res.json({ success: true, data: { ...page, public_url: `${req.protocol}://${req.get('host')}/${page.slug}` } });
+  } catch (err: any) { return res.status(400).json({ success: false, error: err.message }); }
+});
+app.all('/:slug', (req, res, next) => {
+  const slug = lookupSlugFromPath(req.path);
+  const match = [...localLookupPages.entries()].find(([,page]) => page.enabled && page.slug === slug);
+  if (!match) return next();
+  const race = d1Db.getRaceById(match[0]);
+  if (!race) return next();
+  res.set(lookupHeaders);
+  return res.status(503).send(renderLookupPage(race.name, match[1].slug, 'Public pass lookup runs in the Cloudflare Worker. Use the deployed page to test secure downloads.'));
 });
 
 app.put('/api/races/:id/participant-settings', (req, res) => {

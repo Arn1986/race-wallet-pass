@@ -1,4 +1,5 @@
 import type { EmailTemplate } from '../../../server/emailTemplates.ts';
+import { PublicLookupSettings } from './PublicLookupSettings.tsx';
 import React, { useState, useEffect } from 'react';
 import { Race, Runner, PassTemplate } from '../../types/index.ts';
 import { RunnerEditorModal } from './RunnerEditorModal.tsx';
@@ -538,6 +539,8 @@ export const RacesTab: React.FC<RacesTabProps> = ({ onOpenRunnerPass, onNavigate
         <p className="text-xs text-slate-400">Used for individual invitations, CSV imports, and resends. The wallet download button is always included below your message.</p>
         <button type="button" onClick={() => onNavigateTab('email-templates')} className="text-xs text-sky-400 underline">Create or edit email templates</button>
       </div>}
+
+      {selectedRaceId && <PublicLookupSettings key={selectedRaceId} raceId={selectedRaceId} />}
 
       {/* Runner Table Section */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">

@@ -1,3 +1,5 @@
+import { lookupSlugFromPath, validateLookupSettings, lookupHeaders } from '../server/publicLookup.ts';
+import { ensurePublicLookupSchema, enabledLookupPage, handlePublicLookup } from './publicLookup.ts';
 import { ensureParticipantSettings, allowsSharedEmail, hasLegacyEmailConstraint } from './participantSettings.ts';
 import { participantEmail, DUPLICATE_EMAIL_ERROR, DISABLE_SHARED_ERROR } from '../server/participantEmails.ts';
 import { authorizeRequest, PASS_PATH, type AccessConfig } from './adminAccess.ts';
@@ -431,6 +433,19 @@ export default {
     const url = new URL(request.url);
     const { pathname, searchParams } = url;
 
+    // Explicit public exception: an enabled event lookup slug on the participant hostname.
+    // Unknown slugs stop here and never reach organizer handlers or the SPA.
+    const lookupSlug = lookupSlugFromPath(pathname);
+    if (url.origin === new URL(env.PUBLIC_DOMAIN).origin && lookupSlug) {
+      try {
+        const page = await enabledLookupPage(env.DB, lookupSlug);
+        if (!page) return new Response('Not found', { status: 404, headers: lookupHeaders });
+        return await handlePublicLookup(request, env, page);
+      } catch {
+        return new Response('Lookup service temporarily unavailable', { status: 503, headers: lookupHeaders });
+      }
+    }
+
     // Run before assets, CORS, or any API/database operations.
     const accessDenied = await authorizeRequest(request, env);
     if (accessDenied) return accessDenied;
@@ -495,6 +510,28 @@ export default {
         }
         return Response.json({ success: false, error: 'Method not allowed' }, { status: 405, headers: corsHeaders });
       } catch (err: any) { return Response.json({ success: false, error: err.message }, { status: 400, headers: corsHeaders }); }
+    }
+    const lookupSettingsMatch = pathname.match(/^\/api\/races\/([^/]+)\/lookup-page$/);
+    if (lookupSettingsMatch) {
+      if (!['GET', 'PUT'].includes(request.method)) return Response.json({ success: false, error: 'Method not allowed' }, { status: 405, headers: { ...corsHeaders, Allow: 'GET, PUT' } });
+      try {
+        await ensurePublicLookupSchema(env.DB);
+        const raceId = lookupSettingsMatch[1];
+        if (!await env.DB.prepare('SELECT id FROM Races WHERE id = ?').bind(raceId).first()) return Response.json({ success: false, error: 'Event not found' }, { status: 404, headers: corsHeaders });
+        if (request.method === 'PUT') {
+          const settings = validateLookupSettings(await request.json());
+          if (await env.DB.prepare('SELECT race_id FROM PublicLookupPages WHERE slug = ? AND race_id <> ?').bind(settings.slug, raceId).first()) return Response.json({ success: false, error: 'That URL slug is already assigned to another event.' }, { status: 409, headers: corsHeaders });
+          await env.DB.prepare(`INSERT INTO PublicLookupPages(race_id,slug,enabled) VALUES (?,?,?)
+            ON CONFLICT(race_id) DO UPDATE SET slug = excluded.slug, enabled = excluded.enabled, updated_at = CURRENT_TIMESTAMP`)
+            .bind(raceId, settings.slug, settings.enabled ? 1 : 0).run();
+        }
+        const saved = await env.DB.prepare('SELECT slug,enabled FROM PublicLookupPages WHERE race_id = ?').bind(raceId).first<any>();
+        return Response.json({ success: true, data: { slug: saved?.slug || '', enabled: Boolean(saved?.enabled),
+          public_url: saved ? `${new URL(env.PUBLIC_DOMAIN).origin}/${saved.slug}` : null } }, { headers: corsHeaders });
+      } catch (err: any) {
+        const conflict = String(err.message).includes('UNIQUE');
+        return Response.json({ success: false, error: conflict ? 'That URL slug is already assigned to another event.' : err.message }, { status: conflict ? 409 : 400, headers: corsHeaders });
+      }
     }
     const participantSettingsMatch = pathname.match(/^\/api\/races\/([^/]+)\/participant-settings$/);
     if (participantSettingsMatch && request.method === 'PUT') {

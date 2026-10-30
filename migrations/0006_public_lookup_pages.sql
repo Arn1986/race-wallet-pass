@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS PublicLookupPages (
+  race_id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(race_id) REFERENCES Races(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS PublicLookupAttempts (
+  key TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 1, expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_public_lookup_expiry ON PublicLookupAttempts(expires_at);
